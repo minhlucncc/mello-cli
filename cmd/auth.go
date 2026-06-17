@@ -55,7 +55,9 @@ func authLogin(args []string) error {
 		return errors.New("no token provided")
 	}
 
-	// Validate the token before persisting: prefer /me, fall back to /workspaces.
+	// Validate the token before persisting. Prefer /me for the identity; the
+	// workspace list both validates the token (when /me is unavailable) and lets
+	// us auto-select a default workspace.
 	cl := mello.NewClient(r.BaseURL, tok, 30*time.Second)
 	cx, cancel := ctx()
 	defer cancel()
@@ -63,19 +65,41 @@ func authLogin(args []string) error {
 	identity := ""
 	if u, err := cl.GetMe(cx); err == nil {
 		identity = userLabel(u)
-	} else if mello.IsNotFound(err) {
-		if _, werr := cl.ListWorkspaces(cx); werr != nil {
-			return werr
-		}
-		identity = "(token valid; /me not available on this instance)"
-	} else {
+	} else if !mello.IsNotFound(err) {
 		return err
 	}
 
-	if err := config.SetProfile(r.Profile, r.BaseURL, tok, "", true); err != nil {
+	workspaces, err := cl.ListWorkspaces(cx)
+	if err != nil {
+		return err
+	}
+	if identity == "" {
+		identity = fmt.Sprintf("token valid (%d workspace(s) accessible)", len(workspaces))
+	}
+
+	// From just the key, make the common single-workspace case turnkey: select
+	// it as the default so workspace-scoped commands work without `workspace use`.
+	ws := r.WorkspaceID
+	if ws == "" && len(workspaces) == 1 {
+		ws = workspaces[0].ID
+	}
+
+	if err := config.SetProfile(r.Profile, r.BaseURL, tok, ws, true); err != nil {
 		return err
 	}
 	ui.Successf("Logged in to %s as %s", ui.Bold(r.BaseURL), ui.Bold(identity))
+	if ws != "" {
+		name := ws
+		for _, w := range workspaces {
+			if w.ID == ws {
+				name = w.Name
+				break
+			}
+		}
+		fmt.Printf("Default workspace: %s\n", ui.Bold(name))
+	} else if len(workspaces) > 1 {
+		ui.Warnf("%d workspaces available — set one with `mello workspace use <id>`", len(workspaces))
+	}
 	ui.Warnf("token stored in %s (mode 0600)", config.Path())
 	return nil
 }

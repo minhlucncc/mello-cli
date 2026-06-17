@@ -148,16 +148,50 @@ func newFlags(name string) (*flag.FlagSet, *common) {
 	return fs, c
 }
 
-// parse parses args and applies global side effects (color). Usage is printed to
-// stderr on error.
+// parse parses args and applies global side effects (color). Flags may appear
+// before or after positional arguments (the standard flag package stops at the
+// first positional, so we permute first). Usage is printed to stderr on error.
 func parse(fs *flag.FlagSet, c *common, args []string) error {
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderFlags(fs, args)); err != nil {
 		return errSilent{err}
 	}
 	if c.noColor {
 		ui.NoColor = true
 	}
 	return nil
+}
+
+// reorderFlags moves flags (and their values) ahead of positional arguments so
+// `mello ticket move <id> --column X` works as well as flags-first ordering.
+func reorderFlags(fs *flag.FlagSet, args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if len(a) > 1 && a[0] == '-' {
+			flags = append(flags, a)
+			name := strings.TrimLeft(a, "-")
+			if !strings.Contains(name, "=") {
+				if f := fs.Lookup(name); f != nil && !isBoolFlag(f) && i+1 < len(args) {
+					i++
+					flags = append(flags, args[i])
+				}
+			}
+			continue
+		}
+		pos = append(pos, a)
+	}
+	return append(flags, pos...)
+}
+
+func isBoolFlag(f *flag.Flag) bool {
+	if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok {
+		return bf.IsBoolFlag()
+	}
+	return false
 }
 
 // resolveConfig returns the effective config honoring --profile / --base-url.

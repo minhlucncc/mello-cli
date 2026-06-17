@@ -6,8 +6,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Flags are now accepted after positional arguments (for example
+  `mello ticket move <id> --column <c>`); previously such flags were silently
+  ignored.
+
 ### Added
 
+- `auth login` selects the workspace automatically when the token has access to
+  exactly one, so the personal access token is the only setup required. The CLI
+  also runs entirely from `MELLO_TOKEN`/`MELLO_WORKSPACE` without `auth login`.
 - `init` command to create an empty local `.mello` workspace, and support for
   checking multiple boards out into one workspace. Commands default to the sole
   board, accept `-b <board>` to scope to one, and span all boards for

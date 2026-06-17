@@ -104,6 +104,13 @@ mello auth status                         # show the current identity
 mello auth logout
 ```
 
+A personal access token is the only credential the CLI needs; everything it can
+do is authorized by that token's scopes. When the token has access to a single
+workspace, `auth login` selects it automatically, so no further setup is
+required. The CLI can also run entirely from the environment, without `auth
+login`, by setting `MELLO_TOKEN` (and `MELLO_WORKSPACE` when needed) — convenient
+for scripts and CI.
+
 Credentials are stored per profile in `~/.config/mello/config.json` with file
 mode `0600`. See [docs/configuration.md](docs/configuration.md) for profiles and
 environment variables.
