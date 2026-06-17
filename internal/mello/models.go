@@ -2,6 +2,7 @@ package mello
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -125,22 +126,52 @@ type Column struct {
 	Tickets  []Ticket `json:"tickets,omitempty"`
 }
 
+// BoardDetail is a board with its columns (each with nested tickets), as
+// returned by GET /boards/{id}.
+type BoardDetail struct {
+	ID          string   `json:"id"`
+	WorkspaceID string   `json:"workspace_id,omitempty"`
+	Code        string   `json:"code,omitempty"`
+	Name        string   `json:"name"`
+	Columns     []Column `json:"columns,omitempty"`
+}
+
 // Ticket is a single card on a board.
 type Ticket struct {
-	ID          string     `json:"id"`
-	TicketCode  string     `json:"ticket_code,omitempty"`
-	ColumnID    string     `json:"column_id,omitempty"`
-	BoardID     string     `json:"board_id,omitempty"`
-	Title       string     `json:"title"`
-	Description string     `json:"description,omitempty"`
-	Position    int        `json:"position,omitempty"`
-	Status      string     `json:"status,omitempty"`
-	AssigneeID  string     `json:"assignee_id,omitempty"`
-	Members     Members    `json:"members,omitempty"`
-	Assignees   Members    `json:"assignees,omitempty"`
-	Labels      Labels     `json:"labels,omitempty"`
-	CreatedAt   *time.Time `json:"created_at,omitempty"`
-	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+	ID          string         `json:"id"`
+	TicketCode  string         `json:"ticket_code,omitempty"`
+	ColumnID    string         `json:"column_id,omitempty"`
+	BoardID     string         `json:"board_id,omitempty"`
+	Title       string         `json:"title"`
+	Description string         `json:"description,omitempty"`
+	Position    int            `json:"position,omitempty"`
+	Status      string         `json:"status,omitempty"`
+	AssigneeID  string         `json:"assignee_id,omitempty"`
+	Members     Members        `json:"members,omitempty"`
+	Assignees   Members        `json:"assignees,omitempty"`
+	Labels      Labels         `json:"labels,omitempty"`
+	Attachments []Attachment   `json:"attachments,omitempty"`
+	Files       []Attachment   `json:"files,omitempty"`
+	Media       []Attachment   `json:"media,omitempty"`
+	ColumnName  string         `json:"column_name,omitempty"`
+	Comments    []Comment      `json:"comments,omitempty"`   // embedded (internal API)
+	Activities  []HistoryEntry `json:"activities,omitempty"` // embedded history (internal API)
+	CreatedAt   *time.Time     `json:"created_at,omitempty"`
+	UpdatedAt   *time.Time     `json:"updated_at,omitempty"`
+}
+
+// AttachmentList returns attachments embedded in the ticket, however they are
+// named (attachments / files / media).
+func (t Ticket) AttachmentList() []Attachment {
+	switch {
+	case len(t.Attachments) > 0:
+		return t.Attachments
+	case len(t.Files) > 0:
+		return t.Files
+	case len(t.Media) > 0:
+		return t.Media
+	}
+	return nil
 }
 
 // AssigneeMembers returns the ticket's assignees, however the API names them
@@ -170,12 +201,42 @@ func (t Ticket) HasMember(userID string) bool {
 
 // Comment is a markdown annotation on a ticket.
 type Comment struct {
-	ID        string     `json:"id"`
-	TicketID  string     `json:"ticket_id,omitempty"`
-	AuthorID  string     `json:"author_id,omitempty"`
-	Body      string     `json:"body,omitempty"`
-	BodyHTML  string     `json:"body_html,omitempty"`
-	CreatedAt *time.Time `json:"created_at,omitempty"`
+	ID         string     `json:"id"`
+	TicketID   string     `json:"ticket_id,omitempty"`
+	AuthorID   string     `json:"author_id,omitempty"`
+	AuthorName string     `json:"author_name,omitempty"`
+	Body       string     `json:"body,omitempty"`
+	CreatedAt  *time.Time `json:"created_at,omitempty"`
+}
+
+// UnmarshalJSON decodes comments across deployments: body from body/content/
+// text, author from author_id/user_id or a nested author/user object.
+func (cm *Comment) UnmarshalJSON(data []byte) error {
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	cm.ID = pickStr(m, "id", "uuid")
+	cm.TicketID = pickStr(m, "ticket_id")
+	cm.Body = pickStr(m, "body", "content", "text", "message", "comment")
+	cm.AuthorID = pickStr(m, "author_id", "user_id", "created_by")
+	cm.AuthorName = pickStr(m, "author_name", "user_name")
+	for _, k := range []string{"author", "user", "member"} {
+		if o, ok := m[k].(map[string]any); ok {
+			if cm.AuthorID == "" {
+				cm.AuthorID = pickStr(o, "id", "user_id")
+			}
+			if cm.AuthorName == "" {
+				cm.AuthorName = pickStr(o, "name", "display_name", "username", "email")
+			}
+		}
+	}
+	if ts := pickStr(m, "created_at", "createdAt", "timestamp"); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			cm.CreatedAt = &t
+		}
+	}
+	return nil
 }
 
 // Member is a workspace user.
@@ -194,17 +255,36 @@ type User struct {
 	Email string `json:"email,omitempty"`
 }
 
-// Attachment is a file attached to a ticket. Field names are best-effort against
-// the (undocumented) attachments endpoint and tolerate alternates.
+// Attachment is a file attached to a ticket. Deployments vary in field names, so
+// it decodes permissively.
 type Attachment struct {
-	ID        string     `json:"id"`
+	ID        string     `json:"id,omitempty"`
 	TicketID  string     `json:"ticket_id,omitempty"`
 	Filename  string     `json:"filename,omitempty"`
-	Name      string     `json:"name,omitempty"`
 	URL       string     `json:"url,omitempty"`
 	Size      int64      `json:"size,omitempty"`
 	MIME      string     `json:"content_type,omitempty"`
 	CreatedAt *time.Time `json:"created_at,omitempty"`
+}
+
+// UnmarshalJSON maps a variety of key names to the attachment fields.
+func (a *Attachment) UnmarshalJSON(data []byte) error {
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	a.ID = pickStr(m, "id", "uuid")
+	a.TicketID = pickStr(m, "ticket_id")
+	a.Filename = pickStr(m, "filename", "file_name", "name", "title", "original_name", "originalName")
+	a.URL = pickStr(m, "url", "href", "download_url", "downloadUrl", "path", "src", "link", "location")
+	a.MIME = pickStr(m, "content_type", "contentType", "mime", "mime_type", "type")
+	a.Size = pickInt(m, "size", "bytes", "byte_size", "file_size", "fileSize", "length")
+	if ts := pickStr(m, "created_at", "createdAt", "uploaded_at", "timestamp"); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			a.CreatedAt = &t
+		}
+	}
+	return nil
 }
 
 // FileName returns the best available display name for an attachment.
@@ -212,10 +292,24 @@ func (a Attachment) FileName() string {
 	if a.Filename != "" {
 		return a.Filename
 	}
-	if a.Name != "" {
-		return a.Name
+	if a.URL != "" {
+		return a.URL
 	}
 	return a.ID
+}
+
+func pickInt(m map[string]any, keys ...string) int64 {
+	for _, k := range keys {
+		switch v := m[k].(type) {
+		case float64:
+			return int64(v)
+		case string:
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // HistoryEntry is one ticket activity record (GET /tickets/{id}/history).

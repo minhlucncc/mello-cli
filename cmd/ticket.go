@@ -123,7 +123,7 @@ func ticketList(args []string) error {
 		if assigneeID != "" && !t.HasMember(assigneeID) {
 			continue
 		}
-		if *statusFilter != "" && !strings.EqualFold(t.Status, *statusFilter) {
+		if *statusFilter != "" && !strings.EqualFold(t.Status, *statusFilter) && !strings.EqualFold(colN, *statusFilter) {
 			continue
 		}
 		collected = append(collected, row{t: t, col: colN})
@@ -140,10 +140,10 @@ func ticketList(args []string) error {
 	for _, r := range collected {
 		rows = append(rows, []string{
 			ticketRef(r.t), r.col, membersCompact(r.t, nameByID),
-			emptyDash(r.t.Status), ui.Truncate(r.t.Title, 50),
+			ui.Truncate(r.t.Title, 60),
 		})
 	}
-	ui.Table([]string{"ticket", "column", "members", "status", "title"}, rows)
+	ui.Table([]string{"ticket", "column", "members", "title"}, rows)
 	if len(rows) == 0 {
 		fmt.Println(ui.Dim("no tickets"))
 	}
@@ -218,7 +218,6 @@ func ticketView(args []string) error {
 	}
 
 	fmt.Printf("%s  %s\n\n", ui.Bold(ticketRef(t)), t.Title)
-	field("Status", emptyDash(t.Status))
 	field("Members", membersFull(t, nameByID))
 	field("Labels", emptyDash(strings.Join(t.Labels, ", ")))
 	field("Column", emptyDash(colName))
@@ -240,46 +239,67 @@ func ticketView(args []string) error {
 		}
 	}
 
-	// Comments (last N) — shown even when empty (skipped only if unsupported).
+	// Comments (last N) — prefer those embedded in the ticket (internal API),
+	// else the comments endpoint. Shown even when empty.
 	if !*noComments {
-		if comments, err := cl.ListComments(cx, id); err == nil {
-			shown := lastN(comments, *commentsN)
-			section(countHeader("Comments", len(comments), len(shown)))
-			if len(comments) == 0 {
-				noneLine()
+		comments := t.Comments
+		if len(comments) == 0 {
+			if cs, cerr := cl.ListComments(cx, id); cerr == nil {
+				comments = cs
+			} else if !mello.IsNotFound(cerr) {
+				return cerr
 			}
-			for _, cm := range shown {
-				when := ""
-				if cm.CreatedAt != nil {
-					when = cm.CreatedAt.Format("2006-01-02 15:04")
-				}
-				fmt.Printf("  %s %s\n", ui.Bold(memberName(cm.AuthorID, nameByID)), ui.Dim(when))
-				for _, line := range strings.Split(strings.TrimRight(cm.Body, "\n"), "\n") {
-					fmt.Printf("    %s\n", line)
-				}
-			}
-		} else if !mello.IsNotFound(err) {
-			return err
 		}
-	}
-
-	// Attachments — shown even when empty (skipped only if unsupported).
-	if atts, err := cl.ListAttachments(cx, id); err == nil {
-		section(fmt.Sprintf("Attachments (%d)", len(atts)))
-		if len(atts) == 0 {
+		shown := lastN(comments, *commentsN)
+		section(countHeader("Comments", len(comments), len(shown)))
+		if len(comments) == 0 {
 			noneLine()
 		}
-		for _, a := range atts {
-			size := ""
-			if a.Size > 0 {
-				size = ui.Dim(fmt.Sprintf("  (%d bytes)", a.Size))
+		for _, cm := range shown {
+			when := ""
+			if cm.CreatedAt != nil {
+				when = cm.CreatedAt.Format("2006-01-02 15:04")
 			}
-			fmt.Printf("  %s%s\n", a.FileName(), size)
+			author := cm.AuthorName
+			if author == "" {
+				author = memberName(cm.AuthorID, nameByID)
+			}
+			fmt.Printf("  %s %s\n", ui.Bold(author), ui.Dim(when))
+			for _, line := range strings.Split(strings.TrimRight(cm.Body, "\n"), "\n") {
+				fmt.Printf("    %s\n", line)
+			}
 		}
 	}
 
-	// History (last N) — optional endpoint.
-	if hist, err := cl.GetTicketHistory(cx, id); err == nil {
+	// Attachments — prefer those embedded in the ticket; fall back to the
+	// endpoint. Always shown ("(none)" when there are none).
+	atts := t.AttachmentList()
+	if len(atts) == 0 {
+		if endpointAtts, aerr := cl.ListAttachments(cx, id); aerr == nil {
+			atts = endpointAtts
+		}
+	}
+	section(fmt.Sprintf("Attachments (%d)", len(atts)))
+	if len(atts) == 0 {
+		noneLine()
+	}
+	for _, a := range atts {
+		size := ""
+		if a.Size > 0 {
+			size = ui.Dim(fmt.Sprintf("  (%d bytes)", a.Size))
+		}
+		fmt.Printf("  %s%s\n", a.FileName(), size)
+	}
+
+	// History (last N) — prefer embedded activities (internal API), else the
+	// history endpoint.
+	hist := t.Activities
+	if len(hist) == 0 {
+		if h, herr := cl.GetTicketHistory(cx, id); herr == nil {
+			hist = h
+		}
+	}
+	{
 		shown := lastN(hist, *historyN)
 		section(countHeader("History", len(hist), len(shown)))
 		if len(hist) == 0 {

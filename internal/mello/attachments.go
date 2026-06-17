@@ -17,9 +17,16 @@ import (
 // exact paths. We use the conventional shape and degrade gracefully (404) when a
 // Mello deployment doesn't implement them.
 
-// ListAttachments returns a ticket's attachments
-// (GET /tickets/{id}/attachments). Optional endpoint.
+// ListAttachments returns a ticket's attachments. The internal API embeds them
+// in the ticket; the public API exposes GET /tickets/{id}/attachments.
 func (c *Client) ListAttachments(ctx context.Context, ticketID string) ([]Attachment, error) {
+	if c.internal {
+		t, err := c.GetTicket(ctx, ticketID)
+		if err != nil {
+			return nil, err
+		}
+		return t.AttachmentList(), nil
+	}
 	var out []Attachment
 	path := fmt.Sprintf("/tickets/%s/attachments", url.PathEscape(ticketID))
 	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
@@ -72,7 +79,7 @@ func (c *Client) UploadAttachment(ctx context.Context, ticketID, filePath string
 	if len(data) > 0 {
 		_ = json.Unmarshal(data, &out)
 	}
-	if out.Filename == "" && out.Name == "" {
+	if out.Filename == "" {
 		out.Filename = filepath.Base(filePath)
 	}
 	return out, nil
@@ -84,8 +91,12 @@ func (c *Client) UploadAttachment(ctx context.Context, ticketID, filePath string
 func (c *Client) DownloadAttachment(ctx context.Context, ticketID string, att Attachment, w io.Writer) error {
 	target := att.URL
 	if target == "" {
-		target = fmt.Sprintf("%s/tickets/%s/attachments/%s",
-			c.baseURL, url.PathEscape(ticketID), url.PathEscape(att.ID))
+		if c.internal {
+			target = fmt.Sprintf("%s/attachments/%s/download", c.baseURL, url.PathEscape(att.ID))
+		} else {
+			target = fmt.Sprintf("%s/tickets/%s/attachments/%s",
+				c.baseURL, url.PathEscape(ticketID), url.PathEscape(att.ID))
+		}
 	} else if !hasScheme(target) {
 		target = c.baseURL + ensureLeadingSlash(target)
 	}

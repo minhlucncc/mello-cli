@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,11 +38,8 @@ func attachmentList(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	atts, err := cl.ListAttachments(cx, fs.Arg(0))
+	atts, err := ticketAttachments(cx, cl, fs.Arg(0))
 	if err != nil {
-		if mello.IsNotFound(err) {
-			return fmt.Errorf(attachUnsupported)
-		}
 		return err
 	}
 	if c.json {
@@ -56,6 +54,24 @@ func attachmentList(args []string) error {
 		fmt.Println(ui.Dim("no attachments"))
 	}
 	return nil
+}
+
+// ticketAttachments lists a ticket's attachments via the endpoint, falling back
+// to those embedded in the ticket payload when the endpoint isn't supported.
+func ticketAttachments(cx context.Context, cl *mello.Client, sel string) ([]mello.Attachment, error) {
+	id := resolveTicketID(cx, cl, sel)
+	if atts, err := cl.ListAttachments(cx, id); err == nil {
+		if len(atts) > 0 {
+			return atts, nil
+		}
+	} else if !mello.IsNotFound(err) {
+		return nil, err
+	}
+	t, err := cl.GetTicket(cx, id)
+	if err != nil {
+		return nil, err
+	}
+	return t.AttachmentList(), nil
 }
 
 func attachmentAdd(args []string) error {

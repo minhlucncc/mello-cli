@@ -20,15 +20,19 @@ import (
 // DefaultBaseURL is Mello's public API base.
 const DefaultBaseURL = "https://mello.mezon.vn/api/v1"
 
-// Client is a Mello API client bound to one base URL + token.
+// Client is a Mello API client bound to one base URL + token. It supports two
+// backends: the public API (`…/api/v1`, personal access token) and the internal
+// API (`…/api`, session JWT). Mode is inferred from the base URL.
 type Client struct {
-	baseURL string
-	token   string
-	http    *http.Client
+	baseURL  string
+	token    string
+	http     *http.Client
+	internal bool // true for the internal /api backend, false for public /api/v1
 }
 
 // NewClient builds a client. An empty baseURL falls back to DefaultBaseURL; a
-// non-positive timeout falls back to 30s.
+// non-positive timeout falls back to 30s. A base URL not ending in "/v1" is
+// treated as the internal API.
 func NewClient(baseURL, token string, timeout time.Duration) *Client {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
@@ -36,15 +40,20 @@ func NewClient(baseURL, token string, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	base := strings.TrimRight(baseURL, "/")
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		token:   token,
-		http:    &http.Client{Timeout: timeout},
+		baseURL:  base,
+		token:    token,
+		http:     &http.Client{Timeout: timeout},
+		internal: !strings.HasSuffix(base, "/v1"),
 	}
 }
 
 // BaseURL returns the configured base URL.
 func (c *Client) BaseURL() string { return c.baseURL }
+
+// Internal reports whether the client targets the internal /api backend.
+func (c *Client) Internal() bool { return c.internal }
 
 // ListWorkspaces returns the token's workspaces (GET /workspaces).
 func (c *Client) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
@@ -90,9 +99,18 @@ func (c *Client) ListMembers(ctx context.Context, workspaceID string) ([]Member,
 	return out, nil
 }
 
-// ListColumns returns a board's columns (status lanes), each with its tickets
-// nested (GET /boards/{id}/columns).
+// ListColumns returns a board's columns, each with its tickets nested. The
+// internal API serves these via the board detail (GET /boards/{id}); the public
+// API via GET /boards/{id}/columns.
 func (c *Client) ListColumns(ctx context.Context, boardID string) ([]Column, error) {
+	if c.internal {
+		var bd BoardDetail
+		path := fmt.Sprintf("/boards/%s", url.PathEscape(boardID))
+		if err := c.do(ctx, http.MethodGet, path, nil, &bd); err != nil {
+			return nil, err
+		}
+		return bd.Columns, nil
+	}
 	var out []Column
 	path := fmt.Sprintf("/boards/%s/columns", url.PathEscape(boardID))
 	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {

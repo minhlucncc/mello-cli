@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -10,6 +13,27 @@ import (
 	"github.com/minhlucncc/mello-cli/internal/mello"
 	"github.com/minhlucncc/mello-cli/internal/ui"
 )
+
+// decodeJWT extracts sub/email/name from a JWT's payload (no signature check).
+// Returns empty strings if tok is not a JWT.
+func decodeJWT(tok string) (sub, email, name string) {
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		return "", "", ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		if payload, err = base64.StdEncoding.DecodeString(parts[1]); err != nil {
+			return "", "", ""
+		}
+	}
+	var m map[string]any
+	if json.Unmarshal(payload, &m) != nil {
+		return "", "", ""
+	}
+	get := func(k string) string { s, _ := m[k].(string); return s }
+	return get("sub"), get("email"), get("name")
+}
 
 func authCmd() *Command {
 	return &Command{
@@ -55,15 +79,33 @@ func authLogin(args []string) error {
 		return errors.New("no token provided")
 	}
 
-	// Validate the token before persisting. Prefer /me for the identity; the
-	// workspace list both validates the token (when /me is unavailable) and lets
-	// us auto-select a default workspace.
-	cl := mello.NewClient(r.BaseURL, tok, 30*time.Second)
+	// Pick the backend from the token type unless the base URL was set
+	// explicitly: a mello_pat_ key uses the public API (/api/v1); a session JWT
+	// uses the internal API (/api).
+	base := r.BaseURL
+	if c.baseURL == "" && os.Getenv("MELLO_BASE_URL") == "" {
+		if strings.HasPrefix(tok, "mello_pat_") {
+			base = "https://mello.mezon.vn/api/v1"
+		} else {
+			base = "https://mello.mezon.vn/api"
+		}
+	}
+
+	cl := mello.NewClient(base, tok, 30*time.Second)
 	cx, cancel := ctx()
 	defer cancel()
 
+	// Identity + user id: decode a JWT directly, else try /me.
 	identity, userID := "", ""
-	if u, err := cl.GetMe(cx); err == nil {
+	if sub, email, name := decodeJWT(tok); sub != "" {
+		userID = sub
+		switch {
+		case name != "" && email != "":
+			identity = fmt.Sprintf("%s <%s>", name, email)
+		default:
+			identity = firstNonEmpty(name, email)
+		}
+	} else if u, err := cl.GetMe(cx); err == nil {
 		identity = userLabel(u)
 		userID = u.ID
 	} else if !mello.IsNotFound(err) {
@@ -78,20 +120,19 @@ func authLogin(args []string) error {
 		identity = fmt.Sprintf("token valid (%d workspace(s) accessible)", len(workspaces))
 	}
 
-	// From just the key, make the common single-workspace case turnkey: select
-	// it as the default so workspace-scoped commands work without `workspace use`.
+	// From just the token, make the common single-workspace case turnkey.
 	ws := r.WorkspaceID
 	if ws == "" && len(workspaces) == 1 {
 		ws = workspaces[0].ID
 	}
 
-	if err := config.SetProfile(r.Profile, r.BaseURL, tok, ws, true); err != nil {
+	if err := config.SetProfile(r.Profile, base, tok, ws, true); err != nil {
 		return err
 	}
 	if userID != "" {
 		_ = config.SetUserID(r.Profile, userID)
 	}
-	ui.Successf("Logged in to %s as %s", ui.Bold(r.BaseURL), ui.Bold(identity))
+	ui.Successf("Logged in to %s as %s", ui.Bold(base), ui.Bold(identity))
 	if ws != "" {
 		name := ws
 		for _, w := range workspaces {
