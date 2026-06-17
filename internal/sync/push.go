@@ -43,12 +43,11 @@ func (s *Syncer) ComputePlan(ctx context.Context, checkRemote bool) (Plan, error
 		_, statErr := os.Stat(filepath.Join(dir, "ticket.md"))
 		folderExists := statErr == nil
 
-		// Deleted locally: tracked + had a remote id, but the folder is gone.
+		// Folder removed → untrack locally (the remote ticket is kept; use
+		// `mello ticket delete` to remove it on the server).
 		if !folderExists {
-			if rec != nil && rec.RemoteID != "" {
-				plan.Changes = append(plan.Changes, Change{
-					Slug: slug, Ref: firstNonEmpty(rec.Code, shortRef(rec.RemoteID)), RemoteID: rec.RemoteID, Kind: KindDelete,
-				})
+			if rec != nil {
+				delete(s.Board.Tickets, slug)
 			}
 			continue
 		}

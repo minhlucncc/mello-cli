@@ -74,6 +74,33 @@ func TestNotFoundDegrade(t *testing.T) {
 	}
 }
 
+func TestLabelsUnmarshal(t *testing.T) {
+	// Objects (the live-API shape).
+	var a Ticket
+	if err := json.Unmarshal([]byte(`{"id":"x","labels":[{"id":"1","name":"bug"},{"name":"p1"}]}`), &a); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Labels) != 2 || a.Labels[0] != "bug" || a.Labels[1] != "p1" {
+		t.Fatalf("object labels = %v", a.Labels)
+	}
+	// Plain strings.
+	var b Ticket
+	if err := json.Unmarshal([]byte(`{"labels":["a","b"]}`), &b); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Labels) != 2 || b.Labels[0] != "a" {
+		t.Fatalf("string labels = %v", b.Labels)
+	}
+	// null.
+	var c Ticket
+	if err := json.Unmarshal([]byte(`{"labels":null}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Labels != nil {
+		t.Fatalf("null labels = %v", c.Labels)
+	}
+}
+
 func TestMoveTicketSendsColumnAndPosition(t *testing.T) {
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

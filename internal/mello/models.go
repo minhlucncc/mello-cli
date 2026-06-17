@@ -1,6 +1,49 @@
 package mello
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
+
+// Labels is a ticket's labels. Mello deployments return these either as plain
+// strings or as objects (e.g. {"id":…,"name":…}); Labels accepts both and is
+// treated as a list of label names everywhere else. It marshals back to a
+// string array so local baselines stay simple.
+type Labels []string
+
+// UnmarshalJSON accepts ["a","b"], [{"name":"a"}, …], or null.
+func (l *Labels) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*l = nil
+		return nil
+	}
+	var ss []string
+	if err := json.Unmarshal(data, &ss); err == nil {
+		*l = ss
+		return nil
+	}
+	var objs []map[string]any
+	if err := json.Unmarshal(data, &objs); err != nil {
+		return err
+	}
+	out := make([]string, 0, len(objs))
+	for _, o := range objs {
+		if n := labelName(o); n != "" {
+			out = append(out, n)
+		}
+	}
+	*l = out
+	return nil
+}
+
+func labelName(o map[string]any) string {
+	for _, k := range []string{"name", "title", "label", "value", "text", "id"} {
+		if v, ok := o[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 // Workspace is a scoped container for boards and members. JSON tags match the
 // upstream mello-sdk so behavior matches the worker.
@@ -39,7 +82,7 @@ type Ticket struct {
 	Position    int        `json:"position,omitempty"`
 	Status      string     `json:"status,omitempty"`
 	AssigneeID  string     `json:"assignee_id,omitempty"`
-	Labels      []string   `json:"labels,omitempty"`
+	Labels      Labels     `json:"labels,omitempty"`
 	CreatedAt   *time.Time `json:"created_at,omitempty"`
 	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
 }

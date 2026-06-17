@@ -44,14 +44,15 @@ func useRun(args []string) error {
 		return nil
 	}
 
-	// Otherwise resolve, check out, and make it current.
+	// Otherwise resolve and register the board (no ticket download) and make it
+	// current. Tickets are pulled lazily or created locally.
 	cl, _, err := c.client()
 	if err != nil {
 		return err
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	bs, n, err := attachAndClone(cx, cl, tree, sel)
+	bs, err := attachBoard(cx, cl, tree, sel)
 	if err != nil {
 		return err
 	}
@@ -59,6 +60,7 @@ func useRun(args []string) error {
 	if err := tree.Save(); err != nil {
 		return err
 	}
-	ui.Successf("Working board: %s — %d ticket(s)", ui.Bold(bs.Name), n)
+	ui.Successf("Working board: %s", ui.Bold(bs.Name))
+	fmt.Println(ui.Dim("browse: mello ticket list · fetch one: mello pull <ticket> · create: mello new ticket"))
 	return nil
 }

@@ -242,26 +242,65 @@ func TestCreateLocalTicket(t *testing.T) {
 	}
 }
 
-func TestDeleteLocalTicket(t *testing.T) {
+func TestFolderRemovalUntracksKeepsRemote(t *testing.T) {
 	s := newStub()
 	tree, bs := cloneInto(t, s)
 	os.RemoveAll(tree.ticketDir(bs.Slug, "t-1"))
 
-	sy, p := plan(t, s, tree, bs, false)
-	if len(p.Changes) != 1 || p.Changes[0].Kind != KindDelete {
-		t.Fatalf("plan = %+v", p.Changes)
-	}
-	if err := sy.Apply(context.Background(), p, false, false); err != nil {
-		t.Fatal(err)
-	}
-	if s.gotDeletes != 1 {
-		t.Errorf("DeleteTicket calls = %d", s.gotDeletes)
-	}
-	if _, ok := s.tickets["t1"]; ok {
-		t.Errorf("ticket not deleted on server")
+	_, p := plan(t, s, tree, bs, false)
+	if len(p.Changes) != 0 {
+		t.Fatalf("removing a folder must not be a remote change, got %+v", p.Changes)
 	}
 	if _, ok := bs.Tickets["t-1"]; ok {
-		t.Errorf("record not removed")
+		t.Errorf("record not pruned after folder removal")
+	}
+	if _, ok := s.tickets["t1"]; !ok {
+		t.Errorf("remote ticket must NOT be deleted")
+	}
+	if s.gotDeletes != 0 {
+		t.Errorf("no remote delete expected, got %d", s.gotDeletes)
+	}
+}
+
+func TestUntrackKeepsRemote(t *testing.T) {
+	s := newStub()
+	tree, bs := cloneInto(t, s)
+	slug, ok := bs.FindTicketSlug("T-1") // by code
+	if !ok {
+		t.Fatal("ticket not found by code")
+	}
+	tree.Untrack(bs, slug)
+	if _, ok := bs.Tickets[slug]; ok {
+		t.Error("record remains after untrack")
+	}
+	if _, err := os.Stat(tree.ticketDir(bs.Slug, slug)); err == nil {
+		t.Error("folder remains after untrack")
+	}
+	if _, ok := s.tickets["t1"]; !ok {
+		t.Error("remote ticket must survive untrack")
+	}
+}
+
+func TestPullSingleTicketIntoWorkingSet(t *testing.T) {
+	s := newStub()
+	root := t.TempDir()
+	tree, _ := InitWorkspace(root, &State{WorkspaceID: "ws1"})
+	bs := &BoardState{BoardID: "b1", Slug: "b1", Name: "Board One"}
+	tree.AddBoard(bs)
+	sy := &Syncer{API: s, Tree: tree, Board: bs}
+
+	if len(bs.Tickets) != 0 {
+		t.Fatalf("working set should start empty, got %d", len(bs.Tickets))
+	}
+	tk, err := sy.PullTicket(context.Background(), "T-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.ID != "t1" {
+		t.Fatalf("pulled %s", tk.ID)
+	}
+	if _, ok := bs.Tickets["t-1"]; !ok {
+		t.Fatalf("ticket not added to working set: %+v", bs.Tickets)
 	}
 }
 

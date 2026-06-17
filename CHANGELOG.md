@@ -8,15 +8,29 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Decode tickets whose `labels` are returned as objects (the live API shape), not
+  only as plain strings — previously this failed `use`, `pull`, and `ticket list`.
 - Flags are now accepted after positional arguments (for example
   `mello ticket move <id> --column <c>`); previously such flags were silently
   ignored.
+
+### Changed
+
+- The local working copy is now a lazy *working set*: `mello use <board>` sets the
+  working board without downloading any tickets. Browse the board live with
+  `mello ticket list`, pull individual tickets with `mello pull <ticket>` (or
+  mirror everything with `mello pull --all`), or create tickets locally.
+- Removing a ticket from the working set is safe: deleting its folder (or running
+  `mello untrack`) stops tracking it locally and never deletes it on the server.
+  Use `mello ticket delete` to remove a ticket on the server.
 
 ### Added
 
 - `auth login` selects the workspace automatically when the token has access to
   exactly one, so the personal access token is the only setup required. The CLI
   also runs entirely from `MELLO_TOKEN`/`MELLO_WORKSPACE` without `auth login`.
+- `untrack` command to drop tickets from the working set (keeping them on the
+  server).
 - `init` command to create an empty local `.mello` workspace, and support for
   checking multiple boards out into one workspace. Commands default to the sole
   board, accept `-b <board>` to scope to one, and span all boards for

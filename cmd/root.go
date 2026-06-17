@@ -54,6 +54,7 @@ func Root() *Command {
 			{Name: "status", Short: "Show the plan of pending local changes.", Run: syncStatus},
 			{Name: "pull", Short: "Fetch remote changes (checks a board out on demand).", Run: syncPull},
 			{Name: "push", Short: "Apply local changes to the server.", Run: syncPush},
+			untrackCmd(),
 			syncCmd(),
 			newCmd(),
 			versionCmd(),

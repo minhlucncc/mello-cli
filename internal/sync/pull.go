@@ -148,6 +148,83 @@ func (s *Syncer) Pull(ctx context.Context) (updated, deleted int, err error) {
 	return updated, deleted, s.Tree.Save()
 }
 
+// PullTicket fetches a single ticket (by code or id) into the working set.
+func (s *Syncer) PullTicket(ctx context.Context, sel string) (mello.Ticket, error) {
+	cols, err := s.API.ListColumns(ctx, s.Board.BoardID)
+	if err != nil {
+		return mello.Ticket{}, err
+	}
+	idToName := map[string]string{}
+	var found *mello.Ticket
+	var colName string
+	for _, c := range cols {
+		idToName[c.ID] = c.Name
+		for i := range c.Tickets {
+			t := c.Tickets[i]
+			if t.ColumnID == "" {
+				t.ColumnID = c.ID
+			}
+			if t.ID == sel || strings.EqualFold(t.TicketCode, sel) {
+				found = &t
+				colName = c.Name
+			}
+		}
+	}
+	if found == nil {
+		return mello.Ticket{}, fmt.Errorf("no ticket %q on board %s (see `mello ticket list`)", sel, s.Board.Name)
+	}
+	if full, gerr := s.API.GetTicket(ctx, found.ID); gerr == nil {
+		found = &full
+		if n, ok := idToName[full.ColumnID]; ok {
+			colName = n
+		}
+	}
+	slug := s.desiredSlug(*found)
+	if err := s.writeTicket(ctx, *found, colName, slug, true); err != nil {
+		return mello.Ticket{}, err
+	}
+	s.Tree.State.Serial++
+	if err := s.Tree.Save(); err != nil {
+		return mello.Ticket{}, err
+	}
+	return *found, nil
+}
+
+// RefreshWorkingSet re-fetches the tickets already present in the working set
+// (leaving the rest of the board untouched). Tickets deleted on the server are
+// removed locally.
+func (s *Syncer) RefreshWorkingSet(ctx context.Context) (updated, deleted int, err error) {
+	idToName, _, err := s.columnMaps(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	type item struct{ slug, id string }
+	var items []item
+	for slug, rec := range s.Board.Tickets {
+		if rec.RemoteID != "" {
+			items = append(items, item{slug, rec.RemoteID})
+		}
+	}
+	for _, it := range items {
+		t, gerr := s.API.GetTicket(ctx, it.id)
+		if gerr != nil {
+			if mello.IsNotFound(gerr) {
+				if s.removeTicket(it.slug) {
+					deleted++
+				}
+				continue
+			}
+			return updated, deleted, gerr
+		}
+		if werr := s.writeTicket(ctx, t, idToName[t.ColumnID], it.slug, true); werr != nil {
+			return updated, deleted, werr
+		}
+		updated++
+	}
+	s.Tree.State.Serial++
+	return updated, deleted, s.Tree.Save()
+}
+
 // writeTicket writes ticket.md + ticket.json into the given slug folder, records
 // the baseline hash, and pulls comments/attachments. allowPreserve protects
 // local edits during a pull (and flags conflicts when the remote also changed).

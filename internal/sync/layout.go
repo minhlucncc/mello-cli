@@ -188,7 +188,7 @@ func (t *Tree) ResolveBoard(sel string) (*BoardState, error) {
 	}
 	switch len(t.State.Boards) {
 	case 0:
-		return nil, errors.New("no boards in this workspace — run `mello sync clone -b <board>`")
+		return nil, errors.New("no working board — run `mello use <board>`")
 	case 1:
 		for _, bs := range t.State.Boards {
 			return bs, nil
@@ -287,6 +287,32 @@ func (bs *BoardState) record(slug string) *TicketRecord {
 		r.Attachments = map[string]string{}
 	}
 	return r
+}
+
+// FindTicketSlug resolves a ticket selector (slug, code, or remote id) to a
+// tracked ticket slug in the working set.
+func (bs *BoardState) FindTicketSlug(sel string) (string, bool) {
+	if _, ok := bs.Tickets[sel]; ok {
+		return sel, true
+	}
+	for slug, r := range bs.Tickets {
+		if r.RemoteID == sel || (r.Code != "" && strings.EqualFold(r.Code, sel)) {
+			return slug, true
+		}
+	}
+	if s := Slugify(sel); s != sel {
+		if _, ok := bs.Tickets[s]; ok {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+// Untrack removes a ticket from the working set: its local folder and its state
+// record. The remote ticket is not touched.
+func (t *Tree) Untrack(bs *BoardState, ticketSlug string) {
+	_ = os.RemoveAll(t.ticketDir(bs.Slug, ticketSlug))
+	delete(bs.Tickets, ticketSlug)
 }
 
 func (bs *BoardState) slugByRemoteID() map[string]string {

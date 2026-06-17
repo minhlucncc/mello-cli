@@ -73,37 +73,50 @@ func syncClone(args []string) error {
 	return nil
 }
 
-// attachAndClone resolves a board selector and checks it out. When the workspace
-// is not yet known, the board is located across all of the token's workspaces and
-// its workspace is bound to the working copy.
-func attachAndClone(cx context.Context, cl *mello.Client, tree *syncpkg.Tree, sel string) (*syncpkg.BoardState, int, error) {
+// attachBoard registers a board in the workspace WITHOUT fetching its tickets.
+// When the workspace is not yet known, the board is located across all of the
+// token's workspaces and its workspace is bound to the working copy. This is the
+// lightweight default: tickets are pulled lazily (one at a time, or with
+// `pull --all`) or created locally.
+func attachBoard(cx context.Context, cl *mello.Client, tree *syncpkg.Tree, sel string) (*syncpkg.BoardState, error) {
 	if tree.State.WorkspaceID == "" {
 		wsID, wsName, b, err := findBoardAnywhere(cx, cl, sel)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		tree.State.WorkspaceID = wsID
 		tree.State.WorkspaceName = wsName
-		return checkout(cx, cl, tree, b)
+		bs := registerBoard(tree, b)
+		return bs, tree.Save()
 	}
 	boards, err := cl.ListBoards(cx, tree.State.WorkspaceID)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	for _, b := range boards {
 		if matchBoard(b, sel) {
-			return checkout(cx, cl, tree, b)
+			bs := registerBoard(tree, b)
+			return bs, tree.Save()
 		}
 	}
-	return nil, 0, fmt.Errorf("no board %q in this workspace (run `mello board list`)", sel)
+	return nil, fmt.Errorf("no board %q in this workspace (run `mello board list`)", sel)
 }
 
-func checkout(cx context.Context, cl *mello.Client, tree *syncpkg.Tree, b mello.Board) (*syncpkg.BoardState, int, error) {
+func registerBoard(tree *syncpkg.Tree, b mello.Board) *syncpkg.BoardState {
 	slug := syncpkg.Slugify(firstNonEmpty(b.Code, b.Name))
 	bs := tree.State.Boards[slug]
 	if bs == nil {
 		bs = &syncpkg.BoardState{BoardID: b.ID, Slug: slug, Name: b.Name, Code: b.Code}
 		tree.AddBoard(bs)
+	}
+	return bs
+}
+
+// attachAndClone registers a board and mirrors all of its tickets locally.
+func attachAndClone(cx context.Context, cl *mello.Client, tree *syncpkg.Tree, sel string) (*syncpkg.BoardState, int, error) {
+	bs, err := attachBoard(cx, cl, tree, sel)
+	if err != nil {
+		return nil, 0, err
 	}
 	s := &syncpkg.Syncer{API: cl, Tree: tree, Board: bs, Log: logfUI}
 	n, err := s.Clone(cx)
@@ -205,49 +218,57 @@ func syncStatus(args []string) error {
 func syncPull(args []string) error {
 	fs, c := newFlags("pull")
 	dir := fs.String("dir", ".", "workspace directory")
-	board := fs.String("board", "", "board to pull (default the working board)")
+	board := fs.String("board", "", "board (default the working board)")
 	fs.StringVar(board, "b", "", "board (shorthand)")
-	all := fs.Bool("all", false, "all boards in the workspace")
+	all := fs.Bool("all", false, "mirror every ticket on the board")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
-	sel := *board
-	if sel == "" && fs.NArg() > 0 {
-		sel = fs.Arg(0)
+	ticketSel := ""
+	if fs.NArg() > 0 {
+		ticketSel = fs.Arg(0)
+	}
+	tree, err := syncpkg.Open(*dir)
+	if err != nil {
+		return err
+	}
+	bs, err := tree.ResolveBoard(*board)
+	if err != nil {
+		return err
+	}
+	cl, _, err := c.client()
+	if err != nil {
+		return err
 	}
 	cx, cancel := ctx()
 	defer cancel()
+	s := &syncpkg.Syncer{API: cl, Tree: tree, Board: bs, Log: logfUI}
 
-	// Clone-on-demand: `mello pull <board>` checks the board out if it is not
-	// already part of the workspace.
-	if sel != "" {
-		if tree, err := syncpkg.Open(*dir); err == nil {
-			if _, rerr := tree.ResolveBoard(sel); rerr != nil {
-				cl, _, cerr := c.client()
-				if cerr != nil {
-					return cerr
-				}
-				bs, n, e := attachAndClone(cx, cl, tree, sel)
-				if e != nil {
-					return e
-				}
-				ui.Successf("Checked out board %s — %d ticket(s)", ui.Bold(bs.Name), n)
-				return nil
-			}
-		}
-	}
-
-	return forEachBoard(c, *dir, sel, *all, func(s *syncpkg.Syncer) error {
-		updated, deleted, err := s.Pull(cx)
+	switch {
+	case *all:
+		n, err := s.Clone(cx)
 		if err != nil {
 			return err
 		}
-		if len(s.Conflicts) > 0 {
-			ui.Warnf("%d conflict(s) — resolve, then `mello push`", len(s.Conflicts))
+		ui.Successf("Mirrored board %s — %d ticket(s)", ui.Bold(bs.Name), n)
+	case ticketSel != "":
+		t, err := s.PullTicket(cx, ticketSel)
+		if err != nil {
+			return err
 		}
-		ui.Successf("Pulled: %d updated, %d removed (serial %d)", updated, deleted, s.Tree.State.Serial)
-		return nil
-	})
+		ui.Successf("Pulled %s into the working set", ui.Bold(ticketRef(t)))
+	default:
+		updated, deleted, err := s.RefreshWorkingSet(cx)
+		if err != nil {
+			return err
+		}
+		if updated == 0 && deleted == 0 {
+			fmt.Println(ui.Dim("working set is empty — `mello pull <ticket>` or `mello pull --all`"))
+			return nil
+		}
+		ui.Successf("Refreshed working set: %d updated, %d removed", updated, deleted)
+	}
+	return nil
 }
 
 func syncPush(args []string) error {
@@ -297,7 +318,7 @@ func syncReconcile(args []string) error {
 	cx, cancel := ctx()
 	defer cancel()
 	return forEachBoard(c, *dir, *board, *all, func(s *syncpkg.Syncer) error {
-		if _, _, err := s.Pull(cx); err != nil {
+		if _, _, err := s.RefreshWorkingSet(cx); err != nil {
 			return err
 		}
 		if len(s.Conflicts) > 0 && !*force {
