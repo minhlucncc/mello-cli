@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/minhlucncc/mello-cli/internal/mello"
@@ -224,7 +225,7 @@ func syncStatus(args []string) error {
 		if c.json {
 			return ui.JSON(plan)
 		}
-		printPlan(plan, s.Tree.State.Serial)
+		printStatus(s, plan)
 		return nil
 	})
 }
@@ -358,33 +359,76 @@ func syncReconcile(args []string) error {
 	})
 }
 
-// printPlan renders the set of pending changes with status markers.
-func printPlan(plan syncpkg.Plan, serial int) {
-	if len(plan.Changes) == 0 {
-		fmt.Println(ui.Dim("clean — working copy matches baseline"))
-		return
+// printStatus lists the working set (tracked tickets) with each one's state,
+// followed by a summary of pending changes. Clean tickets are shown too, so the
+// command answers "what do I have checked out locally?".
+func printStatus(s *syncpkg.Syncer, plan syncpkg.Plan) {
+	byChangeSlug := make(map[string]syncpkg.Change, len(plan.Changes))
+	for _, ch := range plan.Changes {
+		byChangeSlug[ch.Slug] = ch
+	}
+
+	// Collect tracked slugs from state + any new-local slugs from the plan.
+	slugSet := map[string]bool{}
+	for slug := range s.Board.Tickets {
+		slugSet[slug] = true
 	}
 	for _, ch := range plan.Changes {
-		sym := ch.Symbol()
-		switch ch.Kind {
-		case syncpkg.KindCreate:
-			sym = ui.Green(sym)
-		case syncpkg.KindDelete, syncpkg.KindConflict:
-			sym = ui.Red(sym)
-		default:
-			sym = ui.Yellow(sym)
-		}
-		fmt.Printf("  %s %s  %s\n", sym, ui.Bold(ch.Ref), ui.Dim(changeTags(ch)))
+		slugSet[ch.Slug] = true
 	}
+	slugs := make([]string, 0, len(slugSet))
+	for slug := range slugSet {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+
+	fmt.Printf("%s · %s\n", ui.Bold(s.Board.Name), ui.Dim(fmt.Sprintf("working set: %d ticket(s)", len(slugs))))
+	if len(slugs) == 0 {
+		fmt.Println(ui.Dim("  empty — `mello pull <ticket>` to check one out, or `mello new ticket`"))
+		return
+	}
+	for _, slug := range slugs {
+		ref := slug
+		if rec := s.Board.Tickets[slug]; rec != nil && rec.Code != "" {
+			ref = rec.Code
+		}
+		if ch, ok := byChangeSlug[slug]; ok {
+			if ch.Ref != "" {
+				ref = ch.Ref
+			}
+			fmt.Printf("  %s %s  %s\n", changeSymbol(ch), ui.Bold(ref), ui.Dim(changeTags(ch)))
+		} else {
+			fmt.Printf("  %s %s  %s\n", ui.Dim("·"), ui.Bold(ref), ui.Dim("clean"))
+		}
+	}
+
 	cr, up, de, cf, rm := plan.Summary()
-	fmt.Printf("\nPlan: %d to create, %d to update, %d to delete", cr, up, de)
+	fmt.Println()
+	if cr+up+de+cf+rm == 0 {
+		fmt.Println(ui.Dim("clean — nothing to push"))
+		return
+	}
+	fmt.Printf("Pending: %d to create, %d to update, %d to delete", cr, up, de)
 	if cf > 0 {
 		fmt.Printf(", %s", ui.Red(fmt.Sprintf("%d conflict", cf)))
 	}
 	if rm > 0 {
 		fmt.Printf(", %s", ui.Yellow(fmt.Sprintf("%d remote-changed", rm)))
 	}
-	fmt.Printf("  (serial %d)\n", serial)
+	fmt.Printf("  (serial %d) — `mello push`\n", s.Tree.State.Serial)
+}
+
+// changeSymbol returns the colored status marker for a change.
+func changeSymbol(ch syncpkg.Change) string {
+	sym := ch.Symbol()
+	switch ch.Kind {
+	case syncpkg.KindCreate:
+		return ui.Green(sym)
+	case syncpkg.KindDelete, syncpkg.KindConflict:
+		return ui.Red(sym)
+	default:
+		return ui.Yellow(sym)
+	}
 }
 
 func changeTags(ch syncpkg.Change) string {
