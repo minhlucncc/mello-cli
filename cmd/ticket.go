@@ -13,14 +13,15 @@ import (
 func ticketCmd() *Command {
 	return &Command{
 		Name:  "ticket",
-		Short: "List, view, create, edit, move, and delete tickets.",
+		Short: "List, view, create, edit, move, delete, and pull tickets.",
 		Subs: []*Command{
 			{Name: "list", Short: "List tickets on a board.", Run: ticketList},
 			{Name: "view", Short: "Show a ticket with comments.", Run: ticketView},
 			{Name: "create", Short: "Create a ticket in a column.", Run: ticketCreate},
 			{Name: "edit", Short: "Edit ticket fields (PATCH).", Run: ticketEdit},
-			{Name: "move", Short: "Move a ticket to a column/position.", Run: ticketMove},
+			{Name: "move", Short: "Move a ticket to a column.", Run: ticketMove},
 			{Name: "delete", Short: "Delete a ticket.", Run: ticketDelete},
+			{Name: "pull", Short: "Pull a ticket into the local working set.", Run: syncPull},
 			{Name: "history", Short: "Show a ticket's activity history.", Run: ticketHistory},
 		},
 	}
