@@ -176,10 +176,14 @@ func ticketView(args []string) error {
 			return err
 		}
 		comments, _ := cl.ListComments(cx, id)
+		attachments, _ := cl.ListAttachments(cx, id)
+		history, _ := cl.GetTicketHistory(cx, id)
 		return ui.JSON(struct {
-			Ticket   json.RawMessage `json:"ticket"`
-			Comments []mello.Comment `json:"comments"`
-		}{raw, comments})
+			Ticket      json.RawMessage      `json:"ticket"`
+			Comments    []mello.Comment      `json:"comments"`
+			Attachments []mello.Attachment   `json:"attachments"`
+			History     []mello.HistoryEntry `json:"history"`
+		}{raw, comments, attachments, history})
 	}
 
 	t, err := cl.GetTicket(cx, id)
@@ -236,21 +240,22 @@ func ticketView(args []string) error {
 		}
 	}
 
-	// Comments (last N).
+	// Comments (last N) — shown even when empty (skipped only if unsupported).
 	if !*noComments {
 		if comments, err := cl.ListComments(cx, id); err == nil {
-			if len(comments) > 0 {
-				shown := lastN(comments, *commentsN)
-				section(countHeader("Comments", len(comments), len(shown)))
-				for _, cm := range shown {
-					when := ""
-					if cm.CreatedAt != nil {
-						when = cm.CreatedAt.Format("2006-01-02 15:04")
-					}
-					fmt.Printf("  %s %s\n", ui.Bold(memberName(cm.AuthorID, nameByID)), ui.Dim(when))
-					for _, line := range strings.Split(strings.TrimRight(cm.Body, "\n"), "\n") {
-						fmt.Printf("    %s\n", line)
-					}
+			shown := lastN(comments, *commentsN)
+			section(countHeader("Comments", len(comments), len(shown)))
+			if len(comments) == 0 {
+				noneLine()
+			}
+			for _, cm := range shown {
+				when := ""
+				if cm.CreatedAt != nil {
+					when = cm.CreatedAt.Format("2006-01-02 15:04")
+				}
+				fmt.Printf("  %s %s\n", ui.Bold(memberName(cm.AuthorID, nameByID)), ui.Dim(when))
+				for _, line := range strings.Split(strings.TrimRight(cm.Body, "\n"), "\n") {
+					fmt.Printf("    %s\n", line)
 				}
 			}
 		} else if !mello.IsNotFound(err) {
@@ -258,9 +263,12 @@ func ticketView(args []string) error {
 		}
 	}
 
-	// Attachments.
-	if atts, err := cl.ListAttachments(cx, id); err == nil && len(atts) > 0 {
+	// Attachments — shown even when empty (skipped only if unsupported).
+	if atts, err := cl.ListAttachments(cx, id); err == nil {
 		section(fmt.Sprintf("Attachments (%d)", len(atts)))
+		if len(atts) == 0 {
+			noneLine()
+		}
 		for _, a := range atts {
 			size := ""
 			if a.Size > 0 {
@@ -271,9 +279,12 @@ func ticketView(args []string) error {
 	}
 
 	// History (last N) — optional endpoint.
-	if hist, err := cl.GetTicketHistory(cx, id); err == nil && len(hist) > 0 {
+	if hist, err := cl.GetTicketHistory(cx, id); err == nil {
 		shown := lastN(hist, *historyN)
 		section(countHeader("History", len(hist), len(shown)))
+		if len(hist) == 0 {
+			noneLine()
+		}
 		for _, h := range shown {
 			when := ""
 			if h.CreatedAt != nil {
@@ -283,11 +294,13 @@ func ticketView(args []string) error {
 			if actor == "" {
 				actor = memberName(h.ActorID, nameByID)
 			}
-			fmt.Printf("  %s  %s  %s\n", ui.Dim(when), emptyDash(h.Type), ui.Dim(actor))
+			fmt.Printf("  %s  %s  %s\n", ui.Dim(when), emptyDash(h.Summary()), ui.Dim(actor))
 		}
 	}
 	return nil
 }
+
+func noneLine() { fmt.Printf("  %s\n", ui.Dim("(none)")) }
 
 // field prints an aligned "Label: value" line.
 func field(label, val string) {
@@ -549,7 +562,7 @@ func ticketHistory(args []string) error {
 		if actor == "" {
 			actor = h.ActorID
 		}
-		rows = append(rows, []string{when, h.Type, actor})
+		rows = append(rows, []string{when, emptyDash(h.Summary()), emptyDash(actor)})
 	}
 	ui.Table([]string{"when", "event", "actor"}, rows)
 	return nil

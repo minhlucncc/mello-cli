@@ -219,12 +219,61 @@ func (a Attachment) FileName() string {
 }
 
 // HistoryEntry is one ticket activity record (GET /tickets/{id}/history).
-// Optional endpoint; shape is permissive.
+// Deployments name the fields differently, so it decodes permissively from the
+// raw object and exposes a normalized view.
 type HistoryEntry struct {
-	ID        string         `json:"id,omitempty"`
-	Type      string         `json:"type,omitempty"`
-	ActorID   string         `json:"actor_id,omitempty"`
-	ActorName string         `json:"actor_name,omitempty"`
-	CreatedAt *time.Time     `json:"created_at,omitempty"`
-	Data      map[string]any `json:"data,omitempty"`
+	ID        string
+	Type      string
+	ActorID   string
+	ActorName string
+	CreatedAt *time.Time
+	Raw       map[string]any
+}
+
+// UnmarshalJSON pulls the event type, actor, and timestamp from whatever keys the
+// instance uses, keeping the full object in Raw.
+func (h *HistoryEntry) UnmarshalJSON(data []byte) error {
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	h.Raw = m
+	h.ID = pickStr(m, "id", "uuid")
+	h.Type = pickStr(m, "type", "action", "event", "event_type", "kind", "activity", "verb", "name")
+	h.ActorID = pickStr(m, "actor_id", "user_id", "author_id", "member_id", "by_id", "created_by")
+	h.ActorName = pickStr(m, "actor_name", "user_name", "author_name")
+	for _, k := range []string{"actor", "user", "author", "member", "by"} {
+		if o, ok := m[k].(map[string]any); ok {
+			if h.ActorID == "" {
+				h.ActorID = pickStr(o, "id", "user_id")
+			}
+			if h.ActorName == "" {
+				h.ActorName = pickStr(o, "name", "display_name", "full_name", "username", "email")
+			}
+		}
+	}
+	if ts := pickStr(m, "created_at", "timestamp", "time", "at", "date", "created"); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			h.CreatedAt = &t
+		}
+	}
+	return nil
+}
+
+// MarshalJSON emits the original object so `--json` preserves every field.
+func (h HistoryEntry) MarshalJSON() ([]byte, error) {
+	if h.Raw != nil {
+		return json.Marshal(h.Raw)
+	}
+	return json.Marshal(map[string]any{})
+}
+
+// Summary returns a short human description of the event ("type" plus any field
+// the entry references), e.g. "ticket.updated" or "moved".
+func (h HistoryEntry) Summary() string {
+	if h.Type != "" {
+		return h.Type
+	}
+	// Fall back to a likely descriptive field.
+	return pickStr(h.Raw, "message", "description", "field", "summary", "detail")
 }
