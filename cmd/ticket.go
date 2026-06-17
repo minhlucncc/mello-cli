@@ -153,6 +153,8 @@ func ticketList(args []string) error {
 func ticketView(args []string) error {
 	fs, c := newFlags("ticket view")
 	noComments := fs.Bool("no-comments", false, "skip fetching comments")
+	commentsN := fs.Int("comments", 5, "show the last N comments (0 = all)")
+	historyN := fs.Int("history", 5, "show the last N history entries (0 = all)")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
@@ -185,7 +187,20 @@ func ticketView(args []string) error {
 		return err
 	}
 
-	// Resolve the column name when the board is known.
+	// Resolve member, board, and column names (from cache).
+	nameByID := map[string]string{}
+	boardName := t.BoardID
+	if wsID, _, ok := currentWorkspace(); ok {
+		nameByID = memberNames(cx, cl, wsID)
+		if boards, berr := cachedBoards(cx, cl, wsID); berr == nil {
+			for _, b := range boards {
+				if b.ID == t.BoardID {
+					boardName = emptyDash(b.Name)
+					break
+				}
+			}
+		}
+	}
 	colName := t.ColumnID
 	if t.BoardID != "" {
 		if cols, cerr := cachedColumns(cx, cl, t.BoardID); cerr == nil {
@@ -198,18 +213,13 @@ func ticketView(args []string) error {
 		}
 	}
 
-	nameByID := map[string]string{}
-	if wsID, _, ok := currentWorkspace(); ok {
-		nameByID = memberNames(cx, cl, wsID)
-	}
-
 	fmt.Printf("%s  %s\n\n", ui.Bold(ticketRef(t)), t.Title)
 	field("Status", emptyDash(t.Status))
 	field("Members", membersFull(t, nameByID))
 	field("Labels", emptyDash(strings.Join(t.Labels, ", ")))
 	field("Column", emptyDash(colName))
 	if t.BoardID != "" {
-		field("Board", t.BoardID)
+		field("Board", boardName)
 	}
 	if t.CreatedAt != nil {
 		field("Created", t.CreatedAt.Format("2006-01-02 15:04"))
@@ -218,20 +228,29 @@ func ticketView(args []string) error {
 		field("Updated", t.UpdatedAt.Format("2006-01-02 15:04"))
 	}
 	field("ID", t.ID)
-	if t.Description != "" {
-		fmt.Printf("\n%s\n", t.Description)
+
+	if strings.TrimSpace(t.Description) != "" {
+		section("Description")
+		for _, line := range strings.Split(strings.TrimRight(t.Description, "\n"), "\n") {
+			fmt.Printf("  %s\n", line)
+		}
 	}
 
+	// Comments (last N).
 	if !*noComments {
 		if comments, err := cl.ListComments(cx, id); err == nil {
 			if len(comments) > 0 {
-				fmt.Printf("\n%s\n", ui.Bold(fmt.Sprintf("Comments (%d)", len(comments))))
-				for _, cm := range comments {
+				shown := lastN(comments, *commentsN)
+				section(countHeader("Comments", len(comments), len(shown)))
+				for _, cm := range shown {
 					when := ""
 					if cm.CreatedAt != nil {
 						when = cm.CreatedAt.Format("2006-01-02 15:04")
 					}
-					fmt.Printf("  %s %s\n  %s\n", ui.Dim(emptyDash(cm.AuthorID)), ui.Dim(when), cm.Body)
+					fmt.Printf("  %s %s\n", ui.Bold(memberName(cm.AuthorID, nameByID)), ui.Dim(when))
+					for _, line := range strings.Split(strings.TrimRight(cm.Body, "\n"), "\n") {
+						fmt.Printf("    %s\n", line)
+					}
 				}
 			}
 		} else if !mello.IsNotFound(err) {
@@ -239,10 +258,32 @@ func ticketView(args []string) error {
 		}
 	}
 
+	// Attachments.
 	if atts, err := cl.ListAttachments(cx, id); err == nil && len(atts) > 0 {
-		fmt.Printf("\n%s\n", ui.Bold(fmt.Sprintf("Attachments (%d)", len(atts))))
+		section(fmt.Sprintf("Attachments (%d)", len(atts)))
 		for _, a := range atts {
-			fmt.Printf("  %s\n", a.FileName())
+			size := ""
+			if a.Size > 0 {
+				size = ui.Dim(fmt.Sprintf("  (%d bytes)", a.Size))
+			}
+			fmt.Printf("  %s%s\n", a.FileName(), size)
+		}
+	}
+
+	// History (last N) — optional endpoint.
+	if hist, err := cl.GetTicketHistory(cx, id); err == nil && len(hist) > 0 {
+		shown := lastN(hist, *historyN)
+		section(countHeader("History", len(hist), len(shown)))
+		for _, h := range shown {
+			when := ""
+			if h.CreatedAt != nil {
+				when = h.CreatedAt.Format("2006-01-02 15:04")
+			}
+			actor := h.ActorName
+			if actor == "" {
+				actor = memberName(h.ActorID, nameByID)
+			}
+			fmt.Printf("  %s  %s  %s\n", ui.Dim(when), emptyDash(h.Type), ui.Dim(actor))
 		}
 	}
 	return nil
@@ -251,6 +292,36 @@ func ticketView(args []string) error {
 // field prints an aligned "Label: value" line.
 func field(label, val string) {
 	fmt.Printf("%s %s\n", ui.Dim(fmt.Sprintf("%-9s", label+":")), val)
+}
+
+// section prints a blank line and a bold heading.
+func section(title string) { fmt.Printf("\n%s\n", ui.Bold(title)) }
+
+// countHeader formats "Name (total)" with a "last N" note when truncated.
+func countHeader(name string, total, shown int) string {
+	if shown < total {
+		return fmt.Sprintf("%s (%d) — last %d", name, total, shown)
+	}
+	return fmt.Sprintf("%s (%d)", name, total)
+}
+
+// lastN returns the last n elements (all when n <= 0 or n >= len).
+func lastN[T any](s []T, n int) []T {
+	if n <= 0 || n >= len(s) {
+		return s
+	}
+	return s[len(s)-n:]
+}
+
+// memberName resolves a single user id to a name via the cached map.
+func memberName(id string, names map[string]string) string {
+	if id == "" {
+		return "-"
+	}
+	if n := names[id]; n != "" {
+		return n
+	}
+	return ui.Truncate(id, 12)
 }
 
 func ticketCreate(args []string) error {
