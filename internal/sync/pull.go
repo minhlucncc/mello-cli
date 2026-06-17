@@ -151,11 +151,12 @@ func (s *Syncer) Pull(ctx context.Context) (updated, deleted int, err error) {
 	return updated, deleted, s.Tree.Save()
 }
 
-// PullTicket fetches a single ticket (by code or id) into the working set.
-func (s *Syncer) PullTicket(ctx context.Context, sel string) (mello.Ticket, error) {
+// PullTicket fetches a single ticket (by code or id) into the working set,
+// returning the ticket and its local folder path.
+func (s *Syncer) PullTicket(ctx context.Context, sel string) (mello.Ticket, string, error) {
 	cols, err := s.API.ListColumns(ctx, s.Board.BoardID)
 	if err != nil {
-		return mello.Ticket{}, err
+		return mello.Ticket{}, "", err
 	}
 	idToName := map[string]string{}
 	var found *mello.Ticket
@@ -174,7 +175,7 @@ func (s *Syncer) PullTicket(ctx context.Context, sel string) (mello.Ticket, erro
 		}
 	}
 	if found == nil {
-		return mello.Ticket{}, fmt.Errorf("no ticket %q on board %s (see `mello ticket list`)", sel, s.Board.Name)
+		return mello.Ticket{}, "", fmt.Errorf("no ticket %q on board %s (see `mello ticket list`)", sel, s.Board.Name)
 	}
 	if full, gerr := s.API.GetTicket(ctx, found.ID); gerr == nil {
 		found = &full
@@ -184,13 +185,13 @@ func (s *Syncer) PullTicket(ctx context.Context, sel string) (mello.Ticket, erro
 	}
 	slug := s.desiredSlug(*found)
 	if err := s.writeTicket(ctx, *found, colName, slug, true); err != nil {
-		return mello.Ticket{}, err
+		return mello.Ticket{}, "", err
 	}
 	s.Tree.State.Serial++
 	if err := s.Tree.Save(); err != nil {
-		return mello.Ticket{}, err
+		return mello.Ticket{}, "", err
 	}
-	return *found, nil
+	return *found, s.ticketDir(slug), nil
 }
 
 // RefreshWorkingSet re-fetches the tickets already present in the working set

@@ -292,7 +292,7 @@ func TestPullSingleTicketIntoWorkingSet(t *testing.T) {
 	if len(bs.Tickets) != 0 {
 		t.Fatalf("working set should start empty, got %d", len(bs.Tickets))
 	}
-	tk, err := sy.PullTicket(context.Background(), "T-1")
+	tk, _, err := sy.PullTicket(context.Background(), "T-1")
 	if err != nil {
 		t.Fatal(err)
 	}

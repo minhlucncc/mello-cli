@@ -3,12 +3,24 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/minhlucncc/mello-cli/internal/mello"
 	syncpkg "github.com/minhlucncc/mello-cli/internal/sync"
 	"github.com/minhlucncc/mello-cli/internal/ui"
 )
+
+// relPath shows p relative to the current directory when that's shorter/cleaner.
+func relPath(p string) string {
+	if cwd, err := os.Getwd(); err == nil {
+		if r, rerr := filepath.Rel(cwd, p); rerr == nil && !strings.HasPrefix(r, "..") {
+			return r
+		}
+	}
+	return p
+}
 
 func syncCmd() *Command {
 	return &Command{
@@ -254,11 +266,12 @@ func syncPull(args []string) error {
 		}
 		ui.Successf("Mirrored board %s — %d ticket(s)", ui.Bold(bs.Name), n)
 	case ticketSel != "":
-		t, err := s.PullTicket(cx, ticketSel)
+		t, dir, err := s.PullTicket(cx, ticketSel)
 		if err != nil {
 			return err
 		}
-		ui.Successf("Pulled %s into the working set", ui.Bold(ticketRef(t)))
+		ui.Successf("Pulled %s → %s", ui.Bold(ticketRef(t)), relPath(dir))
+		fmt.Println(ui.Dim("edit " + relPath(filepath.Join(dir, "ticket.md")) + " then `mello push`"))
 	default:
 		updated, deleted, err := s.RefreshWorkingSet(cx)
 		if err != nil {
