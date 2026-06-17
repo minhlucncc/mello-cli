@@ -139,7 +139,7 @@ func ticketList(args []string) error {
 	rows := make([][]string, 0, len(collected))
 	for _, r := range collected {
 		rows = append(rows, []string{
-			ticketRef(r.t), r.col, membersDisplay(r.t, nameByID),
+			ticketRef(r.t), r.col, membersCompact(r.t, nameByID),
 			emptyDash(r.t.Status), ui.Truncate(r.t.Title, 50),
 		})
 	}
@@ -205,7 +205,7 @@ func ticketView(args []string) error {
 
 	fmt.Printf("%s  %s\n\n", ui.Bold(ticketRef(t)), t.Title)
 	field("Status", emptyDash(t.Status))
-	field("Members", membersDisplay(t, nameByID))
+	field("Members", membersFull(t, nameByID))
 	field("Labels", emptyDash(strings.Join(t.Labels, ", ")))
 	field("Column", emptyDash(colName))
 	if t.BoardID != "" {
@@ -493,23 +493,41 @@ func emptyDash(s string) string {
 	return s
 }
 
-// membersDisplay joins a ticket's assignees, preferring inline names, then the
-// cached member-name map, then a short id.
-func membersDisplay(t mello.Ticket, names map[string]string) string {
+// memberLabel resolves one member to a display name (inline name, then the
+// cached member map, then a short id).
+func memberLabel(m mello.TicketMember, names map[string]string) string {
+	if m.Name != "" {
+		return m.Name
+	}
+	if n := names[m.ID]; n != "" {
+		return n
+	}
+	return ui.Truncate(m.ID, 12)
+}
+
+// membersCompact shows the first assignee plus a "+N" badge for the rest (used
+// in tables).
+func membersCompact(t mello.Ticket, names map[string]string) string {
+	ms := t.AssigneeMembers()
+	if len(ms) == 0 {
+		return "-"
+	}
+	first := memberLabel(ms[0], names)
+	if len(ms) == 1 {
+		return first
+	}
+	return fmt.Sprintf("%s +%d", first, len(ms)-1)
+}
+
+// membersFull lists every assignee by name (used in the detail view).
+func membersFull(t mello.Ticket, names map[string]string) string {
 	ms := t.AssigneeMembers()
 	if len(ms) == 0 {
 		return "-"
 	}
 	parts := make([]string, 0, len(ms))
 	for _, m := range ms {
-		n := m.Name
-		if n == "" {
-			n = names[m.ID]
-		}
-		if n == "" {
-			n = ui.Truncate(m.ID, 12)
-		}
-		parts = append(parts, n)
+		parts = append(parts, memberLabel(m, names))
 	}
 	return strings.Join(parts, ", ")
 }
