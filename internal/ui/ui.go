@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 )
 
 // NoColor disables ANSI color (set from --no-color or a non-TTY stdout).
@@ -45,20 +44,85 @@ func Errorf(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "%s %s\n", Red("x"), fmt.Sprintf(format, a...))
 }
 
-// Table renders rows with a header using tab alignment. Header cells are dimmed.
+// Table renders an aligned table with a dimmed header. Column widths are
+// computed from the visible (ANSI-stripped) length of each cell, so colored
+// cells and the dimmed header line up correctly.
 func Table(header []string, rows [][]string) {
-	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	if len(header) > 0 {
-		cells := make([]string, len(header))
-		for i, h := range header {
-			cells[i] = Dim(strings.ToUpper(h))
+	cols := len(header)
+	for _, r := range rows {
+		if len(r) > cols {
+			cols = len(r)
 		}
-		fmt.Fprintln(tw, strings.Join(cells, "\t"))
+	}
+	widths := make([]int, cols)
+	measure := func(cells []string) {
+		for i, c := range cells {
+			if w := visibleLen(c); w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+	measure(header)
+	for _, r := range rows {
+		measure(r)
+	}
+
+	line := func(cells []string, dim bool) string {
+		var b strings.Builder
+		for i := 0; i < cols; i++ {
+			cell := ""
+			if i < len(cells) {
+				cell = cells[i]
+			}
+			if i < cols-1 { // pad every column but the last
+				cell = padRight(cell, widths[i])
+			}
+			if dim {
+				cell = Dim(cell)
+			}
+			b.WriteString(cell)
+			if i < cols-1 {
+				b.WriteString("  ")
+			}
+		}
+		return b.String()
+	}
+
+	if len(header) > 0 {
+		up := make([]string, len(header))
+		for i, h := range header {
+			up[i] = strings.ToUpper(h)
+		}
+		fmt.Println(line(up, true))
 	}
 	for _, r := range rows {
-		fmt.Fprintln(tw, strings.Join(r, "\t"))
+		fmt.Println(line(r, false))
 	}
-	_ = tw.Flush()
+}
+
+func padRight(s string, w int) string {
+	if pad := w - visibleLen(s); pad > 0 {
+		return s + strings.Repeat(" ", pad)
+	}
+	return s
+}
+
+// visibleLen counts runes excluding ANSI escape sequences.
+func visibleLen(s string) int {
+	n, inEsc := 0, false
+	for _, r := range s {
+		switch {
+		case inEsc:
+			if r == 'm' {
+				inEsc = false
+			}
+		case r == '\x1b':
+			inEsc = true
+		default:
+			n++
+		}
+	}
+	return n
 }
 
 // JSON pretty-prints v to stdout (used for --json).
