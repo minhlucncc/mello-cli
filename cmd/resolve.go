@@ -10,7 +10,6 @@ import (
 	"github.com/minhlucncc/mello-cli/internal/config"
 	"github.com/minhlucncc/mello-cli/internal/mello"
 	syncpkg "github.com/minhlucncc/mello-cli/internal/sync"
-	"github.com/minhlucncc/mello-cli/internal/ui"
 )
 
 // normalizeSelector lets a board/ticket/workspace be given as a URL, id, code,
@@ -152,20 +151,7 @@ func resolveWorkspace(cx context.Context, cl *mello.Client, c *common, flagVal s
 		rememberWorkspace(c, wss[0].ID)
 		return wss[0].ID, nil
 	}
-	if ui.IsInteractive() {
-		opts := make([]string, len(wss))
-		for i, w := range wss {
-			opts[i] = fmt.Sprintf("%s  %s", w.Name, ui.Dim(w.ID))
-		}
-		idx, err := ui.Select("Select a workspace:", opts)
-		if err != nil {
-			return "", err
-		}
-		rememberWorkspace(c, wss[idx].ID)
-		ui.Warnf("saved %s as the default workspace (change it with `mello workspace use`)", wss[idx].Name)
-		return wss[idx].ID, nil
-	}
-	return "", fmt.Errorf("multiple workspaces available — pass -w <id> or run `mello workspace use <id>`:\n%s",
+	return "", fmt.Errorf("multiple workspaces — pass -w <id> or run `mello workspace use <id>`:\n%s",
 		workspaceLines(wss))
 }
 

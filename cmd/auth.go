@@ -120,15 +120,9 @@ func authLogin(args []string) error {
 			return err
 		}
 		tok = strings.TrimSpace(s)
-	case tok == "":
-		s, err := ui.PromptSecret("Paste your Mello token (mello_pat_… or session JWT): ")
-		if err != nil {
-			return err
-		}
-		tok = strings.TrimSpace(s)
 	}
 	if tok == "" {
-		return errors.New("no token provided")
+		return errors.New("provide a token: --token <mello_pat_…|jwt>, --with-token (stdin), or --refresh-token <token>")
 	}
 
 	// Pick the backend from the token type unless the base URL was set

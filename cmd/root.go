@@ -54,6 +54,7 @@ func Root() *Command {
 			{Name: "status", Short: "Show the plan of pending local changes.", Run: syncStatus},
 			{Name: "pull", Short: "Fetch remote changes (checks a board out on demand).", Run: syncPull},
 			{Name: "push", Short: "Apply local changes to the server.", Run: syncPush},
+			{Name: "move", Short: "Move a ticket to a column (e.g. mello move PROJ-2 In Progress).", Run: ticketMove},
 			untrackCmd(),
 			syncCmd(),
 			newCmd(),

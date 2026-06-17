@@ -322,13 +322,57 @@ func ticketView(args []string) error {
 
 func noneLine() { fmt.Printf("  %s\n", ui.Dim("(none)")) }
 
-// columnNames joins a board's column names for hints/errors.
+// columnNames joins "Name (slug)" for hints/errors.
 func columnNames(cols []mello.Column) string {
-	names := make([]string, len(cols))
+	parts := make([]string, len(cols))
 	for i, c := range cols {
-		names[i] = c.Name
+		parts[i] = fmt.Sprintf("%s (%s)", c.Name, columnSlug(c.Name))
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(parts, ", ")
+}
+
+// columnSlug is a column's local alias: lowercase, words joined by dashes
+// ("In Progress" → "in-progress").
+func columnSlug(name string) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash && b.Len() > 0 {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// columnKey is a column's compact match key (lowercase alphanumerics only), so
+// "In Progress", "in-progress", and "inprogress" all match.
+func columnKey(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// resolveColumn matches a selector against a board's columns by id, name
+// (case-insensitive), or slug/compact key.
+func resolveColumn(cols []mello.Column, sel string) (id, name string, ok bool) {
+	key := columnKey(sel)
+	for _, c := range cols {
+		if c.ID == sel || strings.EqualFold(c.Name, sel) || (key != "" && columnKey(c.Name) == key) {
+			return c.ID, c.Name, true
+		}
+	}
+	return "", "", false
 }
 
 // field prints an aligned "Label: value" line.
@@ -410,15 +454,9 @@ func ticketCreate(args []string) error {
 	}
 	colID := cols[0].ID
 	if *column != "" {
-		colID = ""
-		for _, cc := range cols {
-			if cc.ID == *column || cc.Name == *column || strings.EqualFold(cc.Name, *column) {
-				colID = cc.ID
-				break
-			}
-		}
-		if colID == "" {
-			return fmt.Errorf("no column %q on this board (see `mello column list`)", *column)
+		var ok bool
+		if colID, _, ok = resolveColumn(cols, *column); !ok {
+			return fmt.Errorf("no column %q on this board. Columns: %s", *column, columnNames(cols))
 		}
 	}
 	t, err := cl.CreateTicket(cx, colID, *title, body)
@@ -508,7 +546,7 @@ func ticketMove(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: mello ticket move <ticket> --column \"<name>\" [--position N]")
+		return fmt.Errorf("usage: mello ticket move <ticket> <column>   (e.g. mello ticket move PROJ-2 In Progress)")
 	}
 	cl, _, err := c.client()
 	if err != nil {
@@ -517,7 +555,6 @@ func ticketMove(args []string) error {
 	cx, cancel := ctx()
 	defer cancel()
 
-	// Fetch the board's columns so we can resolve a name, prompt, or list them.
 	boardID, _, err := resolveBoardID(cx, cl, *board)
 	if err != nil {
 		return err
@@ -530,33 +567,18 @@ func ticketMove(args []string) error {
 		return fmt.Errorf("this board has no columns")
 	}
 
+	// Destination column: the --column flag, or the remaining positional words
+	// (so `mello ticket move PROJ-2 In Progress` works without quotes).
 	target := *column
+	if target == "" && fs.NArg() >= 2 {
+		target = strings.Join(fs.Args()[1:], " ")
+	}
 	if target == "" {
-		// No column given: prompt interactively, else list the choices.
-		if ui.IsInteractive() {
-			names := make([]string, len(cols))
-			for i, cc := range cols {
-				names[i] = cc.Name
-			}
-			idx, serr := ui.Select(fmt.Sprintf("Move %s to which column?", fs.Arg(0)), names)
-			if serr != nil {
-				return serr
-			}
-			target = cols[idx].Name
-		} else {
-			return fmt.Errorf("specify --column. Columns on this board: %s", columnNames(cols))
-		}
+		return fmt.Errorf("specify the destination column. Columns on this board: %s", columnNames(cols))
 	}
 
-	colID := ""
-	for _, cc := range cols {
-		if cc.ID == target || strings.EqualFold(cc.Name, target) {
-			colID = cc.ID
-			target = cc.Name
-			break
-		}
-	}
-	if colID == "" {
+	colID, colName, ok := resolveColumn(cols, target)
+	if !ok {
 		return fmt.Errorf("no column %q on this board. Columns: %s", target, columnNames(cols))
 	}
 
@@ -567,25 +589,22 @@ func ticketMove(args []string) error {
 	if c.json {
 		return ui.JSON(t)
 	}
-	ui.Successf("Moved %s → %s", ui.Bold(ticketRef(t)), *column)
+	ui.Successf("Moved %s → %s", ui.Bold(ticketRef(t)), colName)
 	return nil
 }
 
 func ticketDelete(args []string) error {
 	fs, c := newFlags("ticket delete")
-	yes := fs.Bool("yes", false, "skip confirmation")
-	fs.BoolVar(yes, "y", false, "skip confirmation (shorthand)")
+	yes := fs.Bool("yes", false, "confirm deletion on the server")
+	fs.BoolVar(yes, "y", false, "confirm (shorthand)")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: mello ticket delete <id> [-y]")
+		return fmt.Errorf("usage: mello ticket delete <id> -y")
 	}
 	if !*yes {
-		ans, _ := ui.PromptSecret(fmt.Sprintf("Delete ticket %s? type 'yes': ", fs.Arg(0)))
-		if strings.TrimSpace(ans) != "yes" {
-			return fmt.Errorf("aborted")
-		}
+		return fmt.Errorf("refusing to delete %s without confirmation — pass -y to delete it on the server", fs.Arg(0))
 	}
 	cl, _, err := c.client()
 	if err != nil {
@@ -593,7 +612,8 @@ func ticketDelete(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	if err := cl.DeleteTicket(cx, fs.Arg(0)); err != nil {
+	id := resolveTicketID(cx, cl, fs.Arg(0))
+	if err := cl.DeleteTicket(cx, id); err != nil {
 		if mello.IsNotFound(err) {
 			return fmt.Errorf("ticket delete not supported by this Mello instance (DELETE /tickets/{id} → 404)")
 		}

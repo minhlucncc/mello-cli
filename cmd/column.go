@@ -43,9 +43,9 @@ func columnList(args []string) error {
 	}
 	rows := make([][]string, 0, len(cols))
 	for _, col := range cols {
-		rows = append(rows, []string{fmt.Sprintf("%d", col.Position), col.Name, col.ID})
+		rows = append(rows, []string{fmt.Sprintf("%d", col.Position), col.Name, columnSlug(col.Name), col.ID})
 	}
-	ui.Table([]string{"pos", "name", "id"}, rows)
+	ui.Table([]string{"pos", "name", "slug", "id"}, rows)
 	return nil
 }
 

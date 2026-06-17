@@ -3,12 +3,10 @@
 package ui
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -145,61 +143,12 @@ func Truncate(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// PromptSecret reads a line from stdin without echo when stdin is a terminal.
-// Falls back to a plain read otherwise (e.g. piped input).
-func PromptSecret(prompt string) (string, error) {
-	fmt.Fprint(os.Stderr, prompt)
-	defer fmt.Fprintln(os.Stderr)
-	if restore, ok := disableEcho(); ok {
-		defer restore()
-	}
-	r := bufio.NewReader(os.Stdin)
-	line, err := r.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-	return strings.TrimRight(line, "\r\n"), nil
-}
-
-// ReadAllStdin returns all of stdin, trimmed of a trailing newline.
+// ReadAllStdin returns all of stdin, trimmed of a trailing newline. Used for
+// non-interactive token input (`auth login --with-token`).
 func ReadAllStdin() (string, error) {
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimRight(string(data), "\r\n"), nil
-}
-
-// IsInteractive reports whether stdin is a terminal (so prompts are sensible).
-func IsInteractive() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
-}
-
-// Prompt writes a label to stderr and reads a trimmed line from stdin.
-func Prompt(label string) (string, error) {
-	fmt.Fprint(os.Stderr, label)
-	r := bufio.NewReader(os.Stdin)
-	line, err := r.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-	return strings.TrimSpace(line), nil
-}
-
-// Select prints a numbered menu and returns the chosen zero-based index.
-func Select(title string, options []string) (int, error) {
-	fmt.Fprintln(os.Stderr, title)
-	for i, o := range options {
-		fmt.Fprintf(os.Stderr, "  %s %s\n", Dim(fmt.Sprintf("%d)", i+1)), o)
-	}
-	in, err := Prompt(fmt.Sprintf("Enter a number [1-%d]: ", len(options)))
-	if err != nil {
-		return -1, err
-	}
-	n, err := strconv.Atoi(in)
-	if err != nil || n < 1 || n > len(options) {
-		return -1, fmt.Errorf("invalid selection %q", in)
-	}
-	return n - 1, nil
 }
