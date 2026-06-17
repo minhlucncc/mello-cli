@@ -43,16 +43,12 @@ func (c *Client) CreateTicket(ctx context.Context, columnID, title, description 
 	return out, nil
 }
 
-// MoveTicket relocates a ticket to a column + position. The public API uses
-// PATCH /tickets/{id}/move; the internal API moves via a column_id field on
-// PATCH /tickets/{id}.
+// MoveTicket relocates a ticket to a column + position
+// (PATCH /tickets/{id}/move with {column_id, position}) — same on both backends.
 func (c *Client) MoveTicket(ctx context.Context, ticketID, columnID string, position int) (Ticket, error) {
 	body := map[string]any{"column_id": columnID, "position": position}
 	var out Ticket
 	path := fmt.Sprintf("/tickets/%s/move", url.PathEscape(ticketID))
-	if c.internal {
-		path = fmt.Sprintf("/tickets/%s", url.PathEscape(ticketID))
-	}
 	if err := c.do(ctx, http.MethodPatch, path, body, &out); err != nil {
 		return Ticket{}, err
 	}
