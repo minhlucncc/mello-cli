@@ -106,7 +106,11 @@ func authLogin(args []string) error {
 	case *refreshFlag != "":
 		access, newRT, rerr := mello.RefreshSession(cx, internalBase(c), *refreshFlag, 30*time.Second)
 		if rerr != nil {
-			return fmt.Errorf("refresh login failed (is the refresh token current?): %w", rerr)
+			// Don't wrap the APIError, so the message isn't flattened to the
+			// generic "unauthorized" text — be specific about refresh tokens.
+			return errors.New("refresh-token login failed: that token is expired or already used " +
+				"(refresh tokens are single-use and rotate). Get the current value from the browser: " +
+				"DevTools → Application → Cookies → mello.mezon.vn → refresh_token")
 		}
 		tok = access
 		refreshTok = newRT
