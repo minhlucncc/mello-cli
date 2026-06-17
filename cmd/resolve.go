@@ -31,6 +31,35 @@ func resolveAssignee(cx context.Context, cl *mello.Client, c *common, val string
 	return u.ID, nil
 }
 
+// resolveTicketID maps a ticket selector (code or id) to a remote id, using the
+// working board — the working-set record first, then a live scan of the board's
+// columns — and falling back to the selector itself.
+func resolveTicketID(cx context.Context, cl *mello.Client, sel string) string {
+	tree, err := syncpkg.Open(".")
+	if err != nil {
+		return sel
+	}
+	bs, err := tree.ResolveBoard("")
+	if err != nil {
+		return sel
+	}
+	if slug, ok := bs.FindTicketSlug(sel); ok {
+		if rec := bs.Tickets[slug]; rec != nil && rec.RemoteID != "" {
+			return rec.RemoteID
+		}
+	}
+	if cols, cerr := cl.ListColumns(cx, bs.BoardID); cerr == nil {
+		for _, col := range cols {
+			for _, t := range col.Tickets {
+				if t.ID == sel || strings.EqualFold(t.TicketCode, sel) {
+					return t.ID
+				}
+			}
+		}
+	}
+	return sel
+}
+
 // resolveBoardID returns the board a command should act on. With no selector it
 // uses the working board recorded in the .mello workspace (in or above the
 // current directory). A selector (-b) overrides it, matched first against the

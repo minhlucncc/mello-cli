@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"strings"
@@ -121,7 +122,7 @@ func ticketView(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: mello ticket view <id>")
+		return fmt.Errorf("usage: mello ticket view <id|code>")
 	}
 	cl, _, err := c.client()
 	if err != nil {
@@ -129,43 +130,87 @@ func ticketView(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	t, err := cl.GetTicket(cx, fs.Arg(0))
+	id := resolveTicketID(cx, cl, fs.Arg(0))
+
+	// --json dumps the raw server payload, so every field is visible.
+	if c.json {
+		raw, err := cl.GetTicketRaw(cx, id)
+		if err != nil {
+			return err
+		}
+		comments, _ := cl.ListComments(cx, id)
+		return ui.JSON(struct {
+			Ticket   json.RawMessage `json:"ticket"`
+			Comments []mello.Comment `json:"comments"`
+		}{raw, comments})
+	}
+
+	t, err := cl.GetTicket(cx, id)
 	if err != nil {
 		return err
 	}
 
-	var comments []mello.Comment
+	// Resolve the column name when the board is known.
+	colName := t.ColumnID
+	if t.BoardID != "" {
+		if cols, cerr := cl.ListColumns(cx, t.BoardID); cerr == nil {
+			for _, col := range cols {
+				if col.ID == t.ColumnID {
+					colName = col.Name
+					break
+				}
+			}
+		}
+	}
+
+	fmt.Printf("%s  %s\n\n", ui.Bold(ticketRef(t)), t.Title)
+	field("Status", emptyDash(t.Status))
+	field("Assignee", emptyDash(t.AssigneeID))
+	field("Labels", emptyDash(strings.Join(t.Labels, ", ")))
+	field("Column", emptyDash(colName))
+	if t.BoardID != "" {
+		field("Board", t.BoardID)
+	}
+	if t.CreatedAt != nil {
+		field("Created", t.CreatedAt.Format("2006-01-02 15:04"))
+	}
+	if t.UpdatedAt != nil {
+		field("Updated", t.UpdatedAt.Format("2006-01-02 15:04"))
+	}
+	field("ID", t.ID)
+	if t.Description != "" {
+		fmt.Printf("\n%s\n", t.Description)
+	}
+
 	if !*noComments {
-		if cs, err := cl.ListComments(cx, t.ID); err == nil {
-			comments = cs
+		if comments, err := cl.ListComments(cx, id); err == nil {
+			if len(comments) > 0 {
+				fmt.Printf("\n%s\n", ui.Bold(fmt.Sprintf("Comments (%d)", len(comments))))
+				for _, cm := range comments {
+					when := ""
+					if cm.CreatedAt != nil {
+						when = cm.CreatedAt.Format("2006-01-02 15:04")
+					}
+					fmt.Printf("  %s %s\n  %s\n", ui.Dim(emptyDash(cm.AuthorID)), ui.Dim(when), cm.Body)
+				}
+			}
 		} else if !mello.IsNotFound(err) {
 			return err
 		}
 	}
 
-	if c.json {
-		return ui.JSON(struct {
-			Ticket   mello.Ticket    `json:"ticket"`
-			Comments []mello.Comment `json:"comments"`
-		}{t, comments})
-	}
-
-	fmt.Printf("%s  %s\n", ui.Bold(ticketRef(t)), t.Title)
-	fmt.Printf("%s\n", ui.Dim(fmt.Sprintf("status=%s  assignee=%s  labels=%s", emptyDash(t.Status), emptyDash(t.AssigneeID), emptyDash(strings.Join(t.Labels, ",")))))
-	if t.Description != "" {
-		fmt.Printf("\n%s\n", t.Description)
-	}
-	if len(comments) > 0 {
-		fmt.Printf("\n%s\n", ui.Bold(fmt.Sprintf("Comments (%d)", len(comments))))
-		for _, cm := range comments {
-			when := ""
-			if cm.CreatedAt != nil {
-				when = cm.CreatedAt.Format("2006-01-02 15:04")
-			}
-			fmt.Printf("  %s %s\n  %s\n", ui.Dim(cm.AuthorID), ui.Dim(when), cm.Body)
+	if atts, err := cl.ListAttachments(cx, id); err == nil && len(atts) > 0 {
+		fmt.Printf("\n%s\n", ui.Bold(fmt.Sprintf("Attachments (%d)", len(atts))))
+		for _, a := range atts {
+			fmt.Printf("  %s\n", a.FileName())
 		}
 	}
 	return nil
+}
+
+// field prints an aligned "Label: value" line.
+func field(label, val string) {
+	fmt.Printf("%s %s\n", ui.Dim(fmt.Sprintf("%-9s", label+":")), val)
 }
 
 func ticketCreate(args []string) error {

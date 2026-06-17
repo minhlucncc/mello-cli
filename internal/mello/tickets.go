@@ -2,6 +2,7 @@ package mello
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,6 +14,17 @@ func (c *Client) GetTicket(ctx context.Context, ticketID string) (Ticket, error)
 	path := fmt.Sprintf("/tickets/%s", url.PathEscape(ticketID))
 	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return Ticket{}, err
+	}
+	return out, nil
+}
+
+// GetTicketRaw fetches a ticket as the server's raw JSON, preserving every field
+// (including any the typed model doesn't map).
+func (c *Client) GetTicketRaw(ctx context.Context, ticketID string) (json.RawMessage, error) {
+	var out json.RawMessage
+	path := fmt.Sprintf("/tickets/%s", url.PathEscape(ticketID))
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
