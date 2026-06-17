@@ -113,18 +113,15 @@ func attachmentDownload(args []string) error {
 	if fs.NArg() < 1 {
 		return fmt.Errorf("usage: mello attachment download <ticket> [--dir D]")
 	}
-	ticket := fs.Arg(0)
 	cl, _, err := c.client()
 	if err != nil {
 		return err
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	atts, err := cl.ListAttachments(cx, ticket)
+	ticketID := resolveTicketID(cx, cl, fs.Arg(0))
+	atts, err := ticketAttachments(cx, cl, fs.Arg(0))
 	if err != nil {
-		if mello.IsNotFound(err) {
-			return fmt.Errorf(attachUnsupported)
-		}
 		return err
 	}
 	if err := os.MkdirAll(*dir, 0o755); err != nil {
@@ -136,7 +133,7 @@ func attachmentDownload(args []string) error {
 		if err != nil {
 			return err
 		}
-		err = cl.DownloadAttachment(cx, ticket, a, f)
+		err = cl.DownloadAttachment(cx, ticketID, a, f)
 		cerr := f.Close()
 		if err != nil {
 			return fmt.Errorf("download %s: %w", a.FileName(), err)

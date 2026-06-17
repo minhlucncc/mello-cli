@@ -215,6 +215,8 @@ func (c *common) resolveConfig() (config.Resolved, error) {
 }
 
 // client builds an authenticated client, erroring clearly if no token is set.
+// When the access token is an expired JWT and a refresh token is stored, it is
+// renewed (and the rotated refresh token persisted) before the call.
 func (c *common) client() (*mello.Client, config.Resolved, error) {
 	r, err := c.resolveConfig()
 	if err != nil {
@@ -223,7 +225,30 @@ func (c *common) client() (*mello.Client, config.Resolved, error) {
 	if r.Token == "" {
 		return nil, r, fmt.Errorf("not logged in — run `mello auth login` (or set MELLO_TOKEN)")
 	}
+	r = maybeRefresh(r)
 	return mello.NewClient(r.BaseURL, r.Token, 30*time.Second), r, nil
+}
+
+// maybeRefresh renews an expired JWT access token using the stored refresh
+// token. Best-effort: on failure the original token is used (and the call will
+// surface a 401 if it is truly dead).
+func maybeRefresh(r config.Resolved) config.Resolved {
+	if r.RefreshToken == "" {
+		return r
+	}
+	exp := jwtExp(r.Token)
+	if exp == 0 || time.Now().Unix() < exp-60 { // still valid (60s skew)
+		return r
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	access, newRT, err := mello.RefreshSession(cx, r.BaseURL, r.RefreshToken, 30*time.Second)
+	if err != nil {
+		return r
+	}
+	_ = config.SetTokens(r.Profile, access, newRT)
+	r.Token, r.RefreshToken = access, newRT
+	return r
 }
 
 // ctx returns a background context with a sane timeout for one command.

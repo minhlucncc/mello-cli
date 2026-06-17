@@ -35,6 +35,40 @@ func decodeJWT(tok string) (sub, email, name string) {
 	return get("sub"), get("email"), get("name")
 }
 
+// jwtExp returns the token's exp (unix seconds), or 0 if absent/not a JWT.
+func jwtExp(tok string) int64 {
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		return 0
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		if payload, err = base64.StdEncoding.DecodeString(parts[1]); err != nil {
+			return 0
+		}
+	}
+	var m map[string]any
+	if json.Unmarshal(payload, &m) != nil {
+		return 0
+	}
+	if f, ok := m["exp"].(float64); ok {
+		return int64(f)
+	}
+	return 0
+}
+
+// internalBase returns the internal API base for refresh: --base-url,
+// MELLO_BASE_URL, else the production internal API.
+func internalBase(c *common) string {
+	if c.baseURL != "" {
+		return strings.TrimRight(c.baseURL, "/")
+	}
+	if e := os.Getenv("MELLO_BASE_URL"); e != "" {
+		return strings.TrimRight(e, "/")
+	}
+	return "https://mello.mezon.vn/api"
+}
+
 func authCmd() *Command {
 	return &Command{
 		Name:  "auth",
@@ -49,8 +83,9 @@ func authCmd() *Command {
 
 func authLogin(args []string) error {
 	fs, c := newFlags("auth login")
-	token := fs.String("token", "", "Mello PAT (mello_pat_…); omit to be prompted")
+	token := fs.String("token", "", "Mello PAT (mello_pat_…) or session JWT; omit to be prompted")
 	withToken := fs.Bool("with-token", false, "read the token from stdin (CI-friendly)")
+	refreshFlag := fs.String("refresh-token", "", "session refresh token; exchanged for an access token and auto-renewed")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
@@ -60,8 +95,21 @@ func authLogin(args []string) error {
 		return err
 	}
 
+	cx, cancel := ctx()
+	defer cancel()
+
+	// Determine the access token: exchange a refresh token, or take --token /
+	// --with-token / an interactive prompt.
 	tok := *token
+	refreshTok := ""
 	switch {
+	case *refreshFlag != "":
+		access, newRT, rerr := mello.RefreshSession(cx, internalBase(c), *refreshFlag, 30*time.Second)
+		if rerr != nil {
+			return fmt.Errorf("refresh login failed (is the refresh token current?): %w", rerr)
+		}
+		tok = access
+		refreshTok = newRT
 	case *withToken:
 		s, err := ui.ReadAllStdin()
 		if err != nil {
@@ -69,7 +117,7 @@ func authLogin(args []string) error {
 		}
 		tok = strings.TrimSpace(s)
 	case tok == "":
-		s, err := ui.PromptSecret("Paste your Mello token (mello_pat_…): ")
+		s, err := ui.PromptSecret("Paste your Mello token (mello_pat_… or session JWT): ")
 		if err != nil {
 			return err
 		}
@@ -92,8 +140,6 @@ func authLogin(args []string) error {
 	}
 
 	cl := mello.NewClient(base, tok, 30*time.Second)
-	cx, cancel := ctx()
-	defer cancel()
 
 	// Identity + user id: decode a JWT directly, else try /me.
 	identity, userID := "", ""
@@ -132,7 +178,13 @@ func authLogin(args []string) error {
 	if userID != "" {
 		_ = config.SetUserID(r.Profile, userID)
 	}
+	if refreshTok != "" {
+		_ = config.SetTokens(r.Profile, "", refreshTok)
+	}
 	ui.Successf("Logged in to %s as %s", ui.Bold(base), ui.Bold(identity))
+	if refreshTok != "" {
+		fmt.Println(ui.Dim("session will auto-renew using the refresh token"))
+	}
 	if ws != "" {
 		name := ws
 		for _, w := range workspaces {

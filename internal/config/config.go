@@ -20,10 +20,11 @@ const DefaultBaseURL = "https://mello.mezon.vn/api/v1"
 
 // Profile is one named set of credentials.
 type Profile struct {
-	BaseURL     string `json:"base_url,omitempty"`
-	Token       string `json:"token,omitempty"`
-	WorkspaceID string `json:"workspace_id,omitempty"`
-	UserID      string `json:"user_id,omitempty"`
+	BaseURL      string `json:"base_url,omitempty"`
+	Token        string `json:"token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	WorkspaceID  string `json:"workspace_id,omitempty"`
+	UserID       string `json:"user_id,omitempty"`
 }
 
 // Store is the on-disk config file.
@@ -34,11 +35,12 @@ type Store struct {
 
 // Resolved is the effective config for a command invocation.
 type Resolved struct {
-	BaseURL     string
-	Token       string
-	WorkspaceID string
-	UserID      string
-	Profile     string
+	BaseURL      string
+	Token        string
+	RefreshToken string
+	WorkspaceID  string
+	UserID       string
+	Profile      string
 }
 
 // Dir returns the config directory (~/.config/mello, overridable via
@@ -126,12 +128,30 @@ func Resolve(profileOverride string) (Resolved, error) {
 	ws := firstNonEmpty(os.Getenv("MELLO_WORKSPACE"), prof.WorkspaceID)
 
 	return Resolved{
-		BaseURL:     strings.TrimRight(baseURL, "/"),
-		Token:       token,
-		WorkspaceID: ws,
-		UserID:      prof.UserID,
-		Profile:     name,
+		BaseURL:      strings.TrimRight(baseURL, "/"),
+		Token:        token,
+		RefreshToken: prof.RefreshToken,
+		WorkspaceID:  ws,
+		UserID:       prof.UserID,
+		Profile:      name,
 	}, nil
+}
+
+// SetTokens updates the access token and (rotated) refresh token on a profile.
+func SetTokens(name, token, refreshToken string) error {
+	s, err := Load()
+	if err != nil {
+		return err
+	}
+	prof := s.Profiles[name]
+	if token != "" {
+		prof.Token = token
+	}
+	if refreshToken != "" {
+		prof.RefreshToken = refreshToken
+	}
+	s.Profiles[name] = prof
+	return s.Save()
 }
 
 // SetUserID records the authenticated user's id on a profile (used to resolve
