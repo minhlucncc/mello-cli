@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/minhlucncc/mello-cli/internal/config"
 	"github.com/minhlucncc/mello-cli/internal/ui"
@@ -50,9 +51,9 @@ func workspaceUse(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: mello workspace use <id|name>")
+		return fmt.Errorf("usage: mello workspace use <id|name|board|url>")
 	}
-	want := fs.Arg(0)
+	want := normalizeSelector(fs.Arg(0))
 
 	cl, r, err := c.client()
 	if err != nil {
@@ -64,19 +65,27 @@ func workspaceUse(args []string) error {
 	if err != nil {
 		return err
 	}
-	id, name := "", ""
+
+	// 1. Match a workspace by id or name.
 	for _, w := range ws {
-		if w.ID == want || w.Name == want {
-			id, name = w.ID, w.Name
-			break
+		if w.ID == want || strings.EqualFold(w.Name, want) {
+			if err := config.SetProfile(r.Profile, "", "", w.ID, false); err != nil {
+				return err
+			}
+			ui.Successf("Default workspace set to %s (%s)", ui.Bold(w.Name), w.ID)
+			return nil
 		}
 	}
-	if id == "" {
-		return fmt.Errorf("no workspace matching %q (run `mello workspace list`)", want)
+
+	// 2. Maybe it's a board (id/code/url) — use that board's workspace.
+	if wsID, wsName, _, berr := findBoardAnywhere(cx, cl, want); berr == nil {
+		if err := config.SetProfile(r.Profile, "", "", wsID, false); err != nil {
+			return err
+		}
+		ui.Successf("Default workspace set to %s (%s) — from board %q", ui.Bold(wsName), wsID, want)
+		return nil
 	}
-	if err := config.SetProfile(r.Profile, "", "", id, false); err != nil {
-		return err
-	}
-	ui.Successf("Default workspace set to %s (%s)", ui.Bold(name), id)
-	return nil
+
+	// 3. Not found — show the choices.
+	return fmt.Errorf("no workspace or board matching %q. Your workspaces:\n%s", want, workspaceLines(ws))
 }

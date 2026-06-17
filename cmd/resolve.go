@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/minhlucncc/mello-cli/internal/config"
@@ -11,6 +12,28 @@ import (
 	syncpkg "github.com/minhlucncc/mello-cli/internal/sync"
 	"github.com/minhlucncc/mello-cli/internal/ui"
 )
+
+// normalizeSelector lets a board/ticket/workspace be given as a URL, id, code,
+// or name. From a Mello URL it returns the last path segment — e.g.
+// https://mello.mezon.vn/boards/<id> → <id>, …/tickets/<code> → <code>.
+// Non-URLs are returned unchanged (trimmed).
+func normalizeSelector(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.Contains(s, "://") {
+		return s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return s
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if parts[i] != "" {
+			return parts[i]
+		}
+	}
+	return s
+}
 
 // resolveAssignee turns a filter value into a user id, expanding "me"/"@me" to
 // the authenticated user (from config, falling back to /me).
@@ -35,6 +58,7 @@ func resolveAssignee(cx context.Context, cl *mello.Client, c *common, val string
 // working board — the working-set record first, then a live scan of the board's
 // columns — and falling back to the selector itself.
 func resolveTicketID(cx context.Context, cl *mello.Client, sel string) string {
+	sel = normalizeSelector(sel)
 	tree, err := syncpkg.Open(".")
 	if err != nil {
 		return sel
@@ -65,6 +89,7 @@ func resolveTicketID(cx context.Context, cl *mello.Client, sel string) string {
 // current directory). A selector (-b) overrides it, matched first against the
 // workspace's checked-out boards, then across all boards the token can access.
 func resolveBoardID(cx context.Context, cl *mello.Client, sel string) (id, name string, err error) {
+	sel = normalizeSelector(sel)
 	if tree, terr := syncpkg.Open("."); terr == nil {
 		if bs, rerr := tree.ResolveBoard(sel); rerr == nil {
 			return bs.BoardID, bs.Name, nil
@@ -144,8 +169,9 @@ func resolveWorkspace(cx context.Context, cl *mello.Client, c *common, flagVal s
 		workspaceLines(wss))
 }
 
-// matchWorkspace turns a -w value (id or name) into a workspace id.
+// matchWorkspace turns a -w value (id, name, or URL) into a workspace id.
 func matchWorkspace(cx context.Context, cl *mello.Client, sel string) (string, error) {
+	sel = normalizeSelector(sel)
 	wss, err := cl.ListWorkspaces(cx)
 	if err != nil {
 		return sel, nil // can't list; assume the caller passed an id

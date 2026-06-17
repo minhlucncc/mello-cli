@@ -79,6 +79,7 @@ func syncClone(args []string) error {
 // lightweight default: tickets are pulled lazily (one at a time, or with
 // `pull --all`) or created locally.
 func attachBoard(cx context.Context, cl *mello.Client, tree *syncpkg.Tree, sel string) (*syncpkg.BoardState, error) {
+	sel = normalizeSelector(sel)
 	if tree.State.WorkspaceID == "" {
 		wsID, wsName, b, err := findBoardAnywhere(cx, cl, sel)
 		if err != nil {
@@ -126,6 +127,7 @@ func attachAndClone(cx context.Context, cl *mello.Client, tree *syncpkg.Tree, se
 // findBoardAnywhere searches every workspace the token can see for a board
 // matching sel, returning the owning workspace and the board.
 func findBoardAnywhere(cx context.Context, cl *mello.Client, sel string) (string, string, mello.Board, error) {
+	sel = normalizeSelector(sel)
 	workspaces, err := cl.ListWorkspaces(cx)
 	if err != nil {
 		return "", "", mello.Board{}, err
