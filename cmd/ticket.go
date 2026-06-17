@@ -322,6 +322,15 @@ func ticketView(args []string) error {
 
 func noneLine() { fmt.Printf("  %s\n", ui.Dim("(none)")) }
 
+// columnNames joins a board's column names for hints/errors.
+func columnNames(cols []mello.Column) string {
+	names := make([]string, len(cols))
+	for i, c := range cols {
+		names[i] = c.Name
+	}
+	return strings.Join(names, ", ")
+}
+
 // field prints an aligned "Label: value" line.
 func field(label, val string) {
 	fmt.Printf("%s %s\n", ui.Dim(fmt.Sprintf("%-9s", label+":")), val)
@@ -498,7 +507,7 @@ func ticketMove(args []string) error {
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
-	if fs.NArg() < 1 || *column == "" {
+	if fs.NArg() < 1 {
 		return fmt.Errorf("usage: mello ticket move <ticket> --column \"<name>\" [--position N]")
 	}
 	cl, _, err := c.client()
@@ -508,7 +517,7 @@ func ticketMove(args []string) error {
 	cx, cancel := ctx()
 	defer cancel()
 
-	// Resolve the destination column by name (or id) on the board.
+	// Fetch the board's columns so we can resolve a name, prompt, or list them.
 	boardID, _, err := resolveBoardID(cx, cl, *board)
 	if err != nil {
 		return err
@@ -517,15 +526,38 @@ func ticketMove(args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(cols) == 0 {
+		return fmt.Errorf("this board has no columns")
+	}
+
+	target := *column
+	if target == "" {
+		// No column given: prompt interactively, else list the choices.
+		if ui.IsInteractive() {
+			names := make([]string, len(cols))
+			for i, cc := range cols {
+				names[i] = cc.Name
+			}
+			idx, serr := ui.Select(fmt.Sprintf("Move %s to which column?", fs.Arg(0)), names)
+			if serr != nil {
+				return serr
+			}
+			target = cols[idx].Name
+		} else {
+			return fmt.Errorf("specify --column. Columns on this board: %s", columnNames(cols))
+		}
+	}
+
 	colID := ""
 	for _, cc := range cols {
-		if cc.ID == *column || strings.EqualFold(cc.Name, *column) {
+		if cc.ID == target || strings.EqualFold(cc.Name, target) {
 			colID = cc.ID
+			target = cc.Name
 			break
 		}
 	}
 	if colID == "" {
-		return fmt.Errorf("no column %q on this board (see `mello column list`)", *column)
+		return fmt.Errorf("no column %q on this board. Columns: %s", target, columnNames(cols))
 	}
 
 	t, err := cl.MoveTicket(cx, resolveTicketID(cx, cl, fs.Arg(0)), colID, *position)
