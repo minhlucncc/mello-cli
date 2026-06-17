@@ -1,0 +1,361 @@
+package sync
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/minhlucncc/mello-cli/internal/mello"
+)
+
+// stubAPI is an in-memory Mello backend implementing the sync.API interface.
+type stubAPI struct {
+	cols       []mello.Column
+	tickets    map[string]*mello.Ticket
+	comments   map[string][]mello.Comment
+	noComments bool
+	noAttach   bool
+	clock      int
+
+	gotUpdates int
+	gotMoves   int
+	gotCreates int
+	gotDeletes int
+	gotComment []string
+}
+
+func tptr(s string) *time.Time {
+	tt, _ := time.Parse(time.RFC3339, s)
+	return &tt
+}
+
+func (s *stubAPI) tick() *time.Time {
+	s.clock++
+	tt := time.Date(2026, 1, 1, 0, 0, s.clock, 0, time.UTC)
+	return &tt
+}
+
+func (s *stubAPI) ListColumns(ctx context.Context, boardID string) ([]mello.Column, error) {
+	return s.cols, nil
+}
+func (s *stubAPI) ListTickets(ctx context.Context, ws, after string) ([]mello.Ticket, error) {
+	var out []mello.Ticket
+	for _, t := range s.tickets {
+		out = append(out, *t)
+	}
+	return out, nil
+}
+func (s *stubAPI) GetTicket(ctx context.Context, id string) (mello.Ticket, error) {
+	t, ok := s.tickets[id]
+	if !ok {
+		return mello.Ticket{}, &mello.APIError{Status: http.StatusNotFound}
+	}
+	return *t, nil
+}
+func (s *stubAPI) CreateTicket(ctx context.Context, colID, title, desc string) (mello.Ticket, error) {
+	s.gotCreates++
+	id := fmt.Sprintf("new-%d", s.gotCreates)
+	t := &mello.Ticket{ID: id, TicketCode: fmt.Sprintf("NEW-%d", s.gotCreates), BoardID: "b1",
+		ColumnID: colID, Title: title, Description: desc, Status: "open", UpdatedAt: s.tick()}
+	s.tickets[id] = t
+	return *t, nil
+}
+func (s *stubAPI) DeleteTicket(ctx context.Context, id string) error {
+	if _, ok := s.tickets[id]; !ok {
+		return &mello.APIError{Status: http.StatusNotFound}
+	}
+	delete(s.tickets, id)
+	s.gotDeletes++
+	return nil
+}
+func (s *stubAPI) ListComments(ctx context.Context, id string) ([]mello.Comment, error) {
+	if s.noComments {
+		return nil, &mello.APIError{Status: http.StatusNotFound, Path: "/tickets/x/comments"}
+	}
+	return s.comments[id], nil
+}
+func (s *stubAPI) AddComment(ctx context.Context, id, body string) (mello.Comment, error) {
+	s.gotComment = append(s.gotComment, body)
+	c := mello.Comment{ID: "c-new", TicketID: id, Body: body}
+	s.comments[id] = append(s.comments[id], c)
+	return c, nil
+}
+func (s *stubAPI) ListAttachments(ctx context.Context, id string) ([]mello.Attachment, error) {
+	if s.noAttach {
+		return nil, &mello.APIError{Status: http.StatusNotFound, Path: "/tickets/x/attachments"}
+	}
+	return nil, nil
+}
+func (s *stubAPI) UploadAttachment(ctx context.Context, id, path string) (mello.Attachment, error) {
+	return mello.Attachment{ID: "a1", Filename: filepath.Base(path)}, nil
+}
+func (s *stubAPI) DownloadAttachment(ctx context.Context, id string, a mello.Attachment, w io.Writer) error {
+	_, err := w.Write([]byte("data"))
+	return err
+}
+func (s *stubAPI) UpdateTicket(ctx context.Context, id string, upd mello.TicketUpdate) (mello.Ticket, error) {
+	t := s.tickets[id]
+	if upd.Title != nil {
+		t.Title = *upd.Title
+	}
+	if upd.Description != nil {
+		t.Description = *upd.Description
+	}
+	if upd.Status != nil {
+		t.Status = *upd.Status
+	}
+	if upd.AssigneeID != nil {
+		t.AssigneeID = *upd.AssigneeID
+	}
+	if upd.Labels != nil {
+		t.Labels = *upd.Labels
+	}
+	t.UpdatedAt = s.tick()
+	s.gotUpdates++
+	return *t, nil
+}
+func (s *stubAPI) MoveTicket(ctx context.Context, id, colID string, pos int) (mello.Ticket, error) {
+	t := s.tickets[id]
+	t.ColumnID = colID
+	t.UpdatedAt = s.tick()
+	s.gotMoves++
+	return *t, nil
+}
+
+func newStub() *stubAPI {
+	t1 := &mello.Ticket{
+		ID: "t1", TicketCode: "T-1", BoardID: "b1", ColumnID: "col-todo",
+		Title: "Old title", Description: "old body", Status: "open",
+		UpdatedAt: tptr("2026-01-01T00:00:00Z"),
+	}
+	return &stubAPI{
+		tickets:  map[string]*mello.Ticket{"t1": t1},
+		comments: map[string][]mello.Comment{},
+		cols: []mello.Column{
+			{ID: "col-todo", Name: "Todo", Tickets: []mello.Ticket{*t1}},
+			{ID: "col-doing", Name: "Doing"},
+		},
+	}
+}
+
+func cloneInto(t *testing.T, s *stubAPI) *Tree {
+	t.Helper()
+	root := t.TempDir()
+	tree, err := Init(root, &State{WorkspaceID: "ws1", BoardID: "b1", BoardSlug: "b1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sy := &Syncer{API: s, Tree: tree}
+	if _, err := sy.Clone(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return tree
+}
+
+func plan(t *testing.T, s *stubAPI, tree *Tree, remote bool) (*Syncer, Plan) {
+	t.Helper()
+	sy := &Syncer{API: s, Tree: tree}
+	p, err := sy.ComputePlan(context.Background(), remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sy, p
+}
+
+func TestUpdateAndMove(t *testing.T) {
+	s := newStub()
+	tree := cloneInto(t, s)
+
+	mdPath := filepath.Join(tree.ticketDir("t-1"), "ticket.md")
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatalf("ticket.md not written: %v", err)
+	}
+	edited := strings.ReplaceAll(string(data), "Old title", "New title")
+	edited = strings.ReplaceAll(edited, "column: Todo", "column: Doing")
+	os.WriteFile(mdPath, []byte(edited), 0o644)
+
+	sy, p := plan(t, s, tree, false)
+	if len(p.Changes) != 1 || p.Changes[0].Kind != KindUpdate {
+		t.Fatalf("plan = %+v", p.Changes)
+	}
+	if !p.Changes[0].HasFieldChange || p.Changes[0].MoveToColumn != "Doing" {
+		t.Errorf("change = %+v", p.Changes[0])
+	}
+	if err := sy.Apply(context.Background(), p, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if s.gotUpdates != 1 || s.gotMoves != 1 {
+		t.Errorf("updates=%d moves=%d", s.gotUpdates, s.gotMoves)
+	}
+	if s.tickets["t1"].Title != "New title" || s.tickets["t1"].ColumnID != "col-doing" {
+		t.Errorf("server state = %+v", s.tickets["t1"])
+	}
+	// Clean after push.
+	_, p2 := plan(t, s, tree, false)
+	if len(p2.Changes) != 0 {
+		t.Errorf("expected clean, got %+v", p2.Changes)
+	}
+}
+
+func TestCreateLocalTicket(t *testing.T) {
+	s := newStub()
+	tree := cloneInto(t, s)
+
+	// Scaffold a brand-new local ticket (no state record, no remote id).
+	slug := tree.UniqueSlug("Ship the thing")
+	dir := tree.TicketPath(slug)
+	os.MkdirAll(dir, 0o755)
+	md := RenderTicket(mello.Ticket{Title: "Ship the thing", Description: "do it", Status: "open"}, "Doing")
+	os.WriteFile(filepath.Join(dir, "ticket.md"), md, 0o644)
+
+	sy, p := plan(t, s, tree, false)
+	var create *Change
+	for i := range p.Changes {
+		if p.Changes[i].Kind == KindCreate {
+			create = &p.Changes[i]
+		}
+	}
+	if create == nil {
+		t.Fatalf("no create change in %+v", p.Changes)
+	}
+	if err := sy.Apply(context.Background(), p, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if s.gotCreates != 1 {
+		t.Fatalf("CreateTicket calls = %d", s.gotCreates)
+	}
+	rec := tree.State.Tickets[slug]
+	if rec == nil || rec.RemoteID == "" {
+		t.Fatalf("new ticket not tracked with a remote id: %+v", rec)
+	}
+	// Clean after create.
+	_, p2 := plan(t, s, tree, false)
+	if len(p2.Changes) != 0 {
+		t.Errorf("expected clean after create, got %+v", p2.Changes)
+	}
+}
+
+func TestDeleteLocalTicket(t *testing.T) {
+	s := newStub()
+	tree := cloneInto(t, s)
+	// Remove the ticket folder → should plan a remote delete.
+	os.RemoveAll(tree.ticketDir("t-1"))
+
+	sy, p := plan(t, s, tree, false)
+	if len(p.Changes) != 1 || p.Changes[0].Kind != KindDelete {
+		t.Fatalf("plan = %+v", p.Changes)
+	}
+	if err := sy.Apply(context.Background(), p, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if s.gotDeletes != 1 {
+		t.Errorf("DeleteTicket calls = %d", s.gotDeletes)
+	}
+	if _, ok := s.tickets["t1"]; ok {
+		t.Errorf("ticket not deleted on server")
+	}
+	if _, ok := tree.State.Tickets["t-1"]; ok {
+		t.Errorf("record not removed")
+	}
+}
+
+func TestConflictDetectionAndForce(t *testing.T) {
+	s := newStub()
+	tree := cloneInto(t, s)
+
+	// Local edit.
+	mdPath := filepath.Join(tree.ticketDir("t-1"), "ticket.md")
+	data, _ := os.ReadFile(mdPath)
+	os.WriteFile(mdPath, []byte(strings.ReplaceAll(string(data), "Old title", "Local title")), 0o644)
+	// Remote also changed (different from baseline and from local).
+	s.tickets["t1"].Title = "Remote title"
+	s.tickets["t1"].UpdatedAt = tptr("2026-02-02T00:00:00Z")
+
+	sy, p := plan(t, s, tree, true)
+	if len(p.Changes) != 1 || p.Changes[0].Kind != KindConflict {
+		t.Fatalf("expected conflict, got %+v", p.Changes)
+	}
+	// Without force: skipped.
+	if err := sy.Apply(context.Background(), p, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if s.gotUpdates != 0 {
+		t.Errorf("conflict applied without force: updates=%d", s.gotUpdates)
+	}
+	// With force: local wins.
+	sy2, p2 := plan(t, s, tree, true)
+	if err := sy2.Apply(context.Background(), p2, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if s.tickets["t1"].Title != "Local title" {
+		t.Errorf("force push did not apply local: %q", s.tickets["t1"].Title)
+	}
+}
+
+func TestPushNewComment(t *testing.T) {
+	s := newStub()
+	tree := cloneInto(t, s)
+
+	commentsDir := filepath.Join(tree.ticketDir("t-1"), "comments")
+	os.MkdirAll(commentsDir, 0o755)
+	body := "---\nauthor: me\n---\n\nLooks good, shipping.\n"
+	os.WriteFile(filepath.Join(commentsDir, "draft.md"), []byte(body), 0o644)
+
+	sy, p := plan(t, s, tree, false)
+	if len(p.Changes) != 1 || len(p.Changes[0].NewComments) != 1 {
+		t.Fatalf("expected 1 new comment, got %+v", p.Changes)
+	}
+	if err := sy.Apply(context.Background(), p, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.gotComment) != 1 || s.gotComment[0] != "Looks good, shipping." {
+		t.Errorf("AddComment payload = %v", s.gotComment)
+	}
+	// Draft replaced; second push clean.
+	_, p2 := plan(t, s, tree, false)
+	if len(p2.Changes) != 0 {
+		t.Errorf("expected clean after comment push, got %+v", p2.Changes)
+	}
+}
+
+func TestDryRunMutatesNothing(t *testing.T) {
+	s := newStub()
+	tree := cloneInto(t, s)
+	mdPath := filepath.Join(tree.ticketDir("t-1"), "ticket.md")
+	data, _ := os.ReadFile(mdPath)
+	os.WriteFile(mdPath, []byte(strings.ReplaceAll(string(data), "Old title", "X")), 0o644)
+
+	sy, p := plan(t, s, tree, false)
+	if err := sy.Apply(context.Background(), p, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if s.gotUpdates != 0 || s.gotMoves != 0 {
+		t.Errorf("dry-run mutated: updates=%d moves=%d", s.gotUpdates, s.gotMoves)
+	}
+}
+
+func TestCloneDegradesWhenOptionalEndpointsMissing(t *testing.T) {
+	s := newStub()
+	s.noComments = true
+	s.noAttach = true
+	root := t.TempDir()
+	tr, _ := Init(root, &State{WorkspaceID: "ws1", BoardID: "b1", BoardSlug: "b1"})
+	sy := &Syncer{API: s, Tree: tr}
+	n, err := sy.Clone(context.Background())
+	if err != nil {
+		t.Fatalf("clone should not fail on missing optional endpoints: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("cloned %d tickets, want 1", n)
+	}
+	if !sy.noComments || !sy.noAttachments {
+		t.Errorf("capability flags not set: comments=%v attach=%v", sy.noComments, sy.noAttachments)
+	}
+}

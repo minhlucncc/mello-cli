@@ -1,0 +1,14 @@
+# Build output
+/bin/
+/mello
+*.exe
+
+# Local working copies created by `mello sync clone`
+.mello/
+
+# Editor and OS noise
+*.swp
+.DS_Store
+
+# GoReleaser output
+/dist/

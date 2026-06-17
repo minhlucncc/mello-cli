@@ -1,0 +1,60 @@
+# GoReleaser configuration. See https://goreleaser.com.
+version: 2
+
+project_name: mello
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: mello
+    main: .
+    binary: mello
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/minhlucncc/mello-cli/cmd.Version={{ .Version }}
+      - -X github.com/minhlucncc/mello-cli/cmd.Commit={{ .ShortCommit }}
+      - -X github.com/minhlucncc/mello-cli/cmd.Date={{ .Date }}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"

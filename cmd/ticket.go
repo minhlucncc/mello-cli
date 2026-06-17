@@ -1,0 +1,394 @@
+package cmd
+
+import (
+	"flag"
+	"fmt"
+	"strings"
+
+	"github.com/minhlucncc/mello-cli/internal/mello"
+	"github.com/minhlucncc/mello-cli/internal/ui"
+)
+
+func ticketCmd() *Command {
+	return &Command{
+		Name:  "ticket",
+		Short: "List, view, create, edit, move, and delete tickets.",
+		Subs: []*Command{
+			{Name: "list", Short: "List tickets on a board.", Run: ticketList},
+			{Name: "view", Short: "Show a ticket with comments.", Run: ticketView},
+			{Name: "create", Short: "Create a ticket in a column.", Run: ticketCreate},
+			{Name: "edit", Short: "Edit ticket fields (PATCH).", Run: ticketEdit},
+			{Name: "move", Short: "Move a ticket to a column/position.", Run: ticketMove},
+			{Name: "delete", Short: "Delete a ticket.", Run: ticketDelete},
+			{Name: "history", Short: "Show a ticket's activity history.", Run: ticketHistory},
+		},
+	}
+}
+
+// ticketRef returns the human reference for a ticket (code if present, else id).
+func ticketRef(t mello.Ticket) string {
+	if t.TicketCode != "" {
+		return t.TicketCode
+	}
+	return shortID(t.ID)
+}
+
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+func ticketList(args []string) error {
+	fs, c := newFlags("ticket list")
+	board := fs.String("board", "", "board id")
+	fs.StringVar(board, "b", "", "board id (shorthand)")
+	colFilter := fs.String("column", "", "filter by column name or id")
+	assignee := fs.String("assignee", "", "filter by assignee id")
+	if err := parse(fs, c, args); err != nil {
+		return err
+	}
+	if *board == "" {
+		return fmt.Errorf("usage: mello ticket list -b <board> [--column C] [--assignee A]")
+	}
+	cl, _, err := c.client()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	cols, err := cl.ListColumns(cx, *board)
+	if err != nil {
+		return err
+	}
+
+	colName := map[string]string{}
+	for _, col := range cols {
+		colName[col.ID] = col.Name
+	}
+
+	type row struct {
+		t   mello.Ticket
+		col string
+	}
+	var collected []row
+	for _, col := range cols {
+		if *colFilter != "" && col.Name != *colFilter && col.ID != *colFilter {
+			continue
+		}
+		for _, t := range col.Tickets {
+			if *assignee != "" && t.AssigneeID != *assignee {
+				continue
+			}
+			collected = append(collected, row{t: t, col: col.Name})
+		}
+	}
+
+	if c.json {
+		out := make([]mello.Ticket, 0, len(collected))
+		for _, r := range collected {
+			out = append(out, r.t)
+		}
+		return ui.JSON(out)
+	}
+	rows := make([][]string, 0, len(collected))
+	for _, r := range collected {
+		rows = append(rows, []string{ticketRef(r.t), r.col, r.t.Status, ui.Truncate(r.t.Title, 50)})
+	}
+	ui.Table([]string{"ticket", "column", "status", "title"}, rows)
+	if len(rows) == 0 {
+		fmt.Println(ui.Dim("no tickets"))
+	}
+	return nil
+}
+
+func ticketView(args []string) error {
+	fs, c := newFlags("ticket view")
+	noComments := fs.Bool("no-comments", false, "skip fetching comments")
+	if err := parse(fs, c, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: mello ticket view <id>")
+	}
+	cl, _, err := c.client()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	t, err := cl.GetTicket(cx, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+
+	var comments []mello.Comment
+	if !*noComments {
+		if cs, err := cl.ListComments(cx, t.ID); err == nil {
+			comments = cs
+		} else if !mello.IsNotFound(err) {
+			return err
+		}
+	}
+
+	if c.json {
+		return ui.JSON(struct {
+			Ticket   mello.Ticket    `json:"ticket"`
+			Comments []mello.Comment `json:"comments"`
+		}{t, comments})
+	}
+
+	fmt.Printf("%s  %s\n", ui.Bold(ticketRef(t)), t.Title)
+	fmt.Printf("%s\n", ui.Dim(fmt.Sprintf("status=%s  assignee=%s  labels=%s", emptyDash(t.Status), emptyDash(t.AssigneeID), emptyDash(strings.Join(t.Labels, ",")))))
+	if t.Description != "" {
+		fmt.Printf("\n%s\n", t.Description)
+	}
+	if len(comments) > 0 {
+		fmt.Printf("\n%s\n", ui.Bold(fmt.Sprintf("Comments (%d)", len(comments))))
+		for _, cm := range comments {
+			when := ""
+			if cm.CreatedAt != nil {
+				when = cm.CreatedAt.Format("2006-01-02 15:04")
+			}
+			fmt.Printf("  %s %s\n  %s\n", ui.Dim(cm.AuthorID), ui.Dim(when), cm.Body)
+		}
+	}
+	return nil
+}
+
+func ticketCreate(args []string) error {
+	fs, c := newFlags("ticket create")
+	column := fs.String("column", "", "column id")
+	fs.StringVar(column, "c", "", "column id (shorthand)")
+	title := fs.String("title", "", "ticket title")
+	fs.StringVar(title, "t", "", "ticket title (shorthand)")
+	desc := fs.String("description", "", "ticket description")
+	fs.StringVar(desc, "d", "", "ticket description (shorthand)")
+	descFile := fs.String("body-file", "", "read description from a file")
+	if err := parse(fs, c, args); err != nil {
+		return err
+	}
+	if *column == "" || *title == "" {
+		return fmt.Errorf("usage: mello ticket create -c <column> -t <title> [-d <desc>|--body-file F]")
+	}
+	body := *desc
+	if body == "" && *descFile != "" {
+		b, err := bodyFrom("", *descFile)
+		if err != nil {
+			return err
+		}
+		body = b
+	}
+	cl, _, err := c.client()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	t, err := cl.CreateTicket(cx, *column, *title, body)
+	if err != nil {
+		return err
+	}
+	if c.json {
+		return ui.JSON(t)
+	}
+	ui.Successf("Created ticket %s — %s", ui.Bold(ticketRef(t)), t.Title)
+	return nil
+}
+
+func ticketEdit(args []string) error {
+	fs, c := newFlags("ticket edit")
+	title := fs.String("title", "", "new title")
+	fs.StringVar(title, "t", "", "new title (shorthand)")
+	desc := fs.String("description", "", "new description")
+	fs.StringVar(desc, "d", "", "new description (shorthand)")
+	descFile := fs.String("body-file", "", "read description from a file")
+	status := fs.String("status", "", "new status")
+	assignee := fs.String("assignee", "", "new assignee id")
+	labels := fs.String("labels", "", "comma-separated labels (replaces existing)")
+	if err := parse(fs, c, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: mello ticket edit <id> [-t][-d][--status][--assignee][--labels]")
+	}
+	upd := mello.TicketUpdate{}
+	if isSet(fs, "title", "t") {
+		upd.Title = title
+	}
+	if isSet(fs, "description", "d") {
+		upd.Description = desc
+	} else if *descFile != "" {
+		b, err := bodyFrom("", *descFile)
+		if err != nil {
+			return err
+		}
+		upd.Description = &b
+	}
+	if isSet(fs, "status") {
+		upd.Status = status
+	}
+	if isSet(fs, "assignee") {
+		upd.AssigneeID = assignee
+	}
+	if isSet(fs, "labels") {
+		l := splitCSV(*labels)
+		upd.Labels = &l
+	}
+
+	cl, _, err := c.client()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	t, err := cl.UpdateTicket(cx, fs.Arg(0), upd)
+	if err != nil {
+		if mello.IsNotFound(err) {
+			return fmt.Errorf("ticket edit not supported by this Mello instance (PATCH /tickets/{id} → 404)")
+		}
+		return err
+	}
+	if c.json {
+		return ui.JSON(t)
+	}
+	ui.Successf("Updated ticket %s", ui.Bold(ticketRef(t)))
+	return nil
+}
+
+func ticketMove(args []string) error {
+	fs, c := newFlags("ticket move")
+	column := fs.String("column", "", "destination column id")
+	fs.StringVar(column, "c", "", "destination column id (shorthand)")
+	position := fs.Int("position", 0, "position within the column")
+	if err := parse(fs, c, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 || *column == "" {
+		return fmt.Errorf("usage: mello ticket move <id> --column <col> [--position N]")
+	}
+	cl, _, err := c.client()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	t, err := cl.MoveTicket(cx, fs.Arg(0), *column, *position)
+	if err != nil {
+		return err
+	}
+	if c.json {
+		return ui.JSON(t)
+	}
+	ui.Successf("Moved ticket %s", ui.Bold(ticketRef(t)))
+	return nil
+}
+
+func ticketDelete(args []string) error {
+	fs, c := newFlags("ticket delete")
+	yes := fs.Bool("yes", false, "skip confirmation")
+	fs.BoolVar(yes, "y", false, "skip confirmation (shorthand)")
+	if err := parse(fs, c, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: mello ticket delete <id> [-y]")
+	}
+	if !*yes {
+		ans, _ := ui.PromptSecret(fmt.Sprintf("Delete ticket %s? type 'yes': ", fs.Arg(0)))
+		if strings.TrimSpace(ans) != "yes" {
+			return fmt.Errorf("aborted")
+		}
+	}
+	cl, _, err := c.client()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	if err := cl.DeleteTicket(cx, fs.Arg(0)); err != nil {
+		if mello.IsNotFound(err) {
+			return fmt.Errorf("ticket delete not supported by this Mello instance (DELETE /tickets/{id} → 404)")
+		}
+		return err
+	}
+	ui.Successf("Deleted ticket %s", fs.Arg(0))
+	return nil
+}
+
+func ticketHistory(args []string) error {
+	fs, c := newFlags("ticket history")
+	if err := parse(fs, c, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: mello ticket history <id>")
+	}
+	cl, _, err := c.client()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	hist, err := cl.GetTicketHistory(cx, fs.Arg(0))
+	if err != nil {
+		if mello.IsNotFound(err) {
+			return fmt.Errorf("ticket history not supported by this Mello instance (GET /tickets/{id}/history → 404)")
+		}
+		return err
+	}
+	if c.json {
+		return ui.JSON(hist)
+	}
+	rows := make([][]string, 0, len(hist))
+	for _, h := range hist {
+		when := ""
+		if h.CreatedAt != nil {
+			when = h.CreatedAt.Format("2006-01-02 15:04")
+		}
+		actor := h.ActorName
+		if actor == "" {
+			actor = h.ActorID
+		}
+		rows = append(rows, []string{when, h.Type, actor})
+	}
+	ui.Table([]string{"when", "event", "actor"}, rows)
+	return nil
+}
+
+// ---- helpers ----------------------------------------------------------------
+
+func emptyDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// isSet reports whether any of the given flag names was explicitly set on the
+// command line (so we only PATCH the fields the user actually passed).
+func isSet(fs *flag.FlagSet, names ...string) bool {
+	want := map[string]bool{}
+	for _, n := range names {
+		want[n] = true
+	}
+	found := false
+	fs.Visit(func(f *flag.Flag) {
+		if want[f.Name] {
+			found = true
+		}
+	})
+	return found
+}
