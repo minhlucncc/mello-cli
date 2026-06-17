@@ -148,7 +148,29 @@ A complete listing is in [docs/commands.md](docs/commands.md).
 
 A `.mello` directory is a self-contained workspace that mirrors one or more
 boards. Commands run from anywhere inside it locate the `.mello` directory by
-searching parent directories. Create one with `mello init` or `mello sync clone`.
+searching parent directories.
+
+### Creating a workspace
+
+There are two ways to create one:
+
+- `mello init [<dir>]` creates an **empty** workspace in `<dir>` (default the
+  current directory), bound to your active workspace. Check boards out into it
+  afterwards with `mello sync clone -b <board>`. Use `-w <workspace>` to bind a
+  specific workspace when your token can access more than one.
+
+  ```sh
+  mello init                 # empty workspace in the current directory
+  mello init ./team-board    # empty workspace in ./team-board
+  mello sync clone -b ROADMAP
+  ```
+
+- `mello sync clone -b <board>` creates the workspace (if one does not already
+  exist) and checks the board out in a single step.
+
+`init` is useful when you want to set up the directory first — for example to
+commit `.mello` to source control, or to check out several boards into one
+workspace. `mello init` fails if the directory is already a workspace.
 
 ```
 .mello/
