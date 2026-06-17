@@ -62,9 +62,10 @@ func authLogin(args []string) error {
 	cx, cancel := ctx()
 	defer cancel()
 
-	identity := ""
+	identity, userID := "", ""
 	if u, err := cl.GetMe(cx); err == nil {
 		identity = userLabel(u)
+		userID = u.ID
 	} else if !mello.IsNotFound(err) {
 		return err
 	}
@@ -86,6 +87,9 @@ func authLogin(args []string) error {
 
 	if err := config.SetProfile(r.Profile, r.BaseURL, tok, ws, true); err != nil {
 		return err
+	}
+	if userID != "" {
+		_ = config.SetUserID(r.Profile, userID)
 	}
 	ui.Successf("Logged in to %s as %s", ui.Bold(r.BaseURL), ui.Bold(identity))
 	if ws != "" {

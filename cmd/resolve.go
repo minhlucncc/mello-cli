@@ -12,6 +12,25 @@ import (
 	"github.com/minhlucncc/mello-cli/internal/ui"
 )
 
+// resolveAssignee turns a filter value into a user id, expanding "me"/"@me" to
+// the authenticated user (from config, falling back to /me).
+func resolveAssignee(cx context.Context, cl *mello.Client, c *common, val string) (string, error) {
+	if val != "me" && val != "@me" {
+		return val, nil
+	}
+	if r, err := c.resolveConfig(); err == nil && r.UserID != "" {
+		return r.UserID, nil
+	}
+	u, err := cl.GetMe(cx)
+	if err != nil {
+		if mello.IsNotFound(err) {
+			return "", fmt.Errorf("cannot resolve \"me\": this Mello instance has no /me endpoint — pass --assignee <your-user-id>")
+		}
+		return "", err
+	}
+	return u.ID, nil
+}
+
 // resolveBoardID returns the board a command should act on. With no selector it
 // uses the working board recorded in the .mello workspace (in or above the
 // current directory). A selector (-b) overrides it, matched first against the

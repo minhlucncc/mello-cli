@@ -45,7 +45,9 @@ func ticketList(args []string) error {
 	board := fs.String("board", "", "board (default the working board)")
 	fs.StringVar(board, "b", "", "board (shorthand)")
 	colFilter := fs.String("column", "", "filter by column name or id")
-	assignee := fs.String("assignee", "", "filter by assignee id")
+	assignee := fs.String("assignee", "", "filter by assignee (\"me\" for yourself)")
+	mine := fs.Bool("mine", false, "only tickets assigned to you (alias for --assignee me)")
+	statusFilter := fs.String("status", "", "filter by status")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
@@ -55,6 +57,16 @@ func ticketList(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
+
+	assigneeSel := *assignee
+	if *mine {
+		assigneeSel = "me"
+	}
+	assigneeID, err := resolveAssignee(cx, cl, c, assigneeSel)
+	if err != nil {
+		return err
+	}
+
 	boardID, _, err := resolveBoardID(cx, cl, *board)
 	if err != nil {
 		return err
@@ -62,11 +74,6 @@ func ticketList(args []string) error {
 	cols, err := cl.ListColumns(cx, boardID)
 	if err != nil {
 		return err
-	}
-
-	colName := map[string]string{}
-	for _, col := range cols {
-		colName[col.ID] = col.Name
 	}
 
 	type row struct {
@@ -79,7 +86,10 @@ func ticketList(args []string) error {
 			continue
 		}
 		for _, t := range col.Tickets {
-			if *assignee != "" && t.AssigneeID != *assignee {
+			if assigneeID != "" && t.AssigneeID != assigneeID {
+				continue
+			}
+			if *statusFilter != "" && !strings.EqualFold(t.Status, *statusFilter) {
 				continue
 			}
 			collected = append(collected, row{t: t, col: col.Name})
@@ -232,7 +242,7 @@ func ticketEdit(args []string) error {
 	fs.StringVar(desc, "d", "", "new description (shorthand)")
 	descFile := fs.String("body-file", "", "read description from a file")
 	status := fs.String("status", "", "new status")
-	assignee := fs.String("assignee", "", "new assignee id")
+	assignee := fs.String("assignee", "", "new assignee (\"me\" for yourself)")
 	labels := fs.String("labels", "", "comma-separated labels (replaces existing)")
 	if err := parse(fs, c, args); err != nil {
 		return err
@@ -240,6 +250,13 @@ func ticketEdit(args []string) error {
 	if fs.NArg() < 1 {
 		return fmt.Errorf("usage: mello ticket edit <id> [-t][-d][--status][--assignee][--labels]")
 	}
+	cl, _, err := c.client()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+
 	upd := mello.TicketUpdate{}
 	if isSet(fs, "title", "t") {
 		upd.Title = title
@@ -257,19 +274,17 @@ func ticketEdit(args []string) error {
 		upd.Status = status
 	}
 	if isSet(fs, "assignee") {
-		upd.AssigneeID = assignee
+		a, err := resolveAssignee(cx, cl, c, *assignee)
+		if err != nil {
+			return err
+		}
+		upd.AssigneeID = &a
 	}
 	if isSet(fs, "labels") {
 		l := splitCSV(*labels)
 		upd.Labels = &l
 	}
 
-	cl, _, err := c.client()
-	if err != nil {
-		return err
-	}
-	cx, cancel := ctx()
-	defer cancel()
 	t, err := cl.UpdateTicket(cx, fs.Arg(0), upd)
 	if err != nil {
 		if mello.IsNotFound(err) {

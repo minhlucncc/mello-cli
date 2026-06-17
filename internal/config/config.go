@@ -23,6 +23,7 @@ type Profile struct {
 	BaseURL     string `json:"base_url,omitempty"`
 	Token       string `json:"token,omitempty"`
 	WorkspaceID string `json:"workspace_id,omitempty"`
+	UserID      string `json:"user_id,omitempty"`
 }
 
 // Store is the on-disk config file.
@@ -36,6 +37,7 @@ type Resolved struct {
 	BaseURL     string
 	Token       string
 	WorkspaceID string
+	UserID      string
 	Profile     string
 }
 
@@ -127,8 +129,22 @@ func Resolve(profileOverride string) (Resolved, error) {
 		BaseURL:     strings.TrimRight(baseURL, "/"),
 		Token:       token,
 		WorkspaceID: ws,
+		UserID:      prof.UserID,
 		Profile:     name,
 	}, nil
+}
+
+// SetUserID records the authenticated user's id on a profile (used to resolve
+// "me" in filters without an extra request).
+func SetUserID(name, userID string) error {
+	s, err := Load()
+	if err != nil {
+		return err
+	}
+	prof := s.Profiles[name]
+	prof.UserID = userID
+	s.Profiles[name] = prof
+	return s.Save()
 }
 
 // SetProfile creates/updates a profile and optionally makes it current. Empty
