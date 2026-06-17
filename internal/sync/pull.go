@@ -274,6 +274,9 @@ func (s *Syncer) writeTicket(ctx context.Context, t mello.Ticket, columnName, sl
 		_ = os.Remove(filepath.Join(dir, "ticket.remote.json"))
 	}
 
+	// README.md is a generated, human-readable summary (like `ticket view`).
+	_ = os.WriteFile(filepath.Join(dir, "README.md"), RenderREADME(t, columnName), 0o644)
+
 	rec.Slug = slug
 	rec.RemoteID = t.ID
 	rec.Code = t.TicketCode
