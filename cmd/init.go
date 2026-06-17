@@ -11,15 +11,15 @@ import (
 func initCmd() *Command {
 	return &Command{
 		Name:  "init",
-		Short: "Create a local .mello workspace in a directory.",
+		Short: "Create an empty local .mello workspace.",
 		Run:   initRun,
 	}
 }
 
 func initRun(args []string) error {
 	fs, c := newFlags("init")
-	wsFlag := fs.String("workspace", "", "workspace id or name")
-	fs.StringVar(wsFlag, "w", "", "workspace id or name (shorthand)")
+	wsFlag := fs.String("workspace", "", "optional workspace id to bind up front")
+	fs.StringVar(wsFlag, "w", "", "optional workspace id (shorthand)")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
@@ -31,55 +31,21 @@ func initRun(args []string) error {
 		return fmt.Errorf("%s is already a mello workspace", filepath.Join(dir, syncpkg.DirName))
 	}
 
-	r, err := c.resolveConfig()
-	if err != nil {
-		return err
-	}
-
-	wsID := firstNonEmpty(*wsFlag, r.WorkspaceID)
-	wsName := ""
-	// If authenticated, resolve the workspace to validate it and capture its name.
-	if r.Token != "" {
-		cl, _, cerr := c.client()
-		if cerr == nil {
-			cx, cancel := ctx()
-			defer cancel()
-			workspaces, lerr := cl.ListWorkspaces(cx)
-			if lerr != nil {
-				return lerr
-			}
-			if wsID == "" && len(workspaces) == 1 {
-				wsID = workspaces[0].ID
-			}
-			matched := false
-			for _, w := range workspaces {
-				if w.ID == wsID || w.Name == wsID {
-					wsID, wsName, matched = w.ID, w.Name, true
-					break
-				}
-			}
-			if !matched && wsID != "" {
-				return fmt.Errorf("no workspace matching %q (see `mello workspace list`)", wsID)
-			}
-		}
-	}
-	if wsID == "" {
-		return fmt.Errorf("no workspace set — pass -w <id|name> or run `mello workspace use <id>`")
-	}
+	// init needs nothing — not even a token. The workspace is bound later, when
+	// the first board is checked out (it is taken from that board). A workspace
+	// may be pre-bound with -w, or inherited from config, but neither is required.
+	r, _ := c.resolveConfig()
 
 	tree, err := syncpkg.InitWorkspace(dir, &syncpkg.State{
-		Profile: r.Profile, BaseURL: r.BaseURL, WorkspaceID: wsID, WorkspaceName: wsName,
+		Profile:     r.Profile,
+		BaseURL:     r.BaseURL,
+		WorkspaceID: firstNonEmpty(*wsFlag, r.WorkspaceID),
 	})
 	if err != nil {
 		return err
 	}
-	label := wsName
-	if label == "" {
-		label = wsID
-	}
-	ui.Successf("Initialized empty mello workspace for %s in %s/%s",
-		ui.Bold(label), tree.Root, syncpkg.DirName)
-	fmt.Println(ui.Dim("next: mello sync clone -b <board>"))
+	ui.Successf("Initialized empty mello workspace in %s/%s", tree.Root, syncpkg.DirName)
+	fmt.Println(ui.Dim("next: mello use <board>   (e.g. mello use ROAD)"))
 	return nil
 }
 

@@ -67,29 +67,28 @@ make install            # installs to $GOBIN
 ## Quick start
 
 ```sh
-mello auth login                          # store a personal access token
-mello workspace use <workspace>           # select a default workspace
-mello sync clone -b <board>               # create a workspace and check a board out
+mello auth login                 # store your API token (once)
+mello init                       # create a workspace in the current directory
+mello clone ROADMAP              # check a board out by code or slug
 
 # edit ticket files, write comments, add attachments, create new tickets …
 
-mello sync status                         # review pending changes
-mello sync push                           # apply them to the server
+mello status                     # review pending changes
+mello push                       # apply them to the server
+mello pull                       # later: fetch remote changes
 ```
 
-A working copy can hold more than one board. Use `mello init` to create an empty
-workspace and check boards out into it:
+`mello init` requires nothing. `mello clone <board>` (or `mello pull <board>`)
+finds the board across the workspaces your token can access and binds the right
+one automatically — no need to pick a workspace first.
 
-```sh
-mello init                                # create an empty .mello workspace here
-mello sync clone -b ROADMAP               # check out a board
-mello sync clone -b OPERATIONS            # check out another
-mello sync status                         # plan across all boards
-```
+A workspace can hold more than one board; check out additional boards with more
+`mello clone <board>` calls. Most commands act on the only board when there is
+one, so `-b` is rarely needed. With several boards, `-b <board>` scopes a command
+to one, and `status`/`pull`/`push` cover them all by default.
 
-Most commands act on the only board when there is one, so `-b` is rarely needed.
-With several boards, `-b <board>` scopes a command to one, and `mello sync
-status`/`pull`/`push` cover them all by default.
+These verbs are available at the top level (`mello clone`, `status`, `pull`,
+`push`) and also under `mello sync`.
 
 ## Authentication
 

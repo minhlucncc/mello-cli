@@ -23,12 +23,12 @@ func memberList(args []string) error {
 	if err != nil {
 		return err
 	}
-	ws, err := requireWorkspace(*wsFlag, r)
+	cx, cancel := ctx()
+	defer cancel()
+	ws, err := workspaceContext(cx, cl, c, *wsFlag, r)
 	if err != nil {
 		return err
 	}
-	cx, cancel := ctx()
-	defer cancel()
 	members, err := cl.ListMembers(cx, ws)
 	if err != nil {
 		return err

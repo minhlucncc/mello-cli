@@ -48,6 +48,12 @@ func Root() *Command {
 			memberCmd(),
 			searchCmd(),
 			initCmd(),
+			useCmd(),
+			// Top-level workspace verbs (also available under `sync`).
+			{Name: "clone", Short: "Check a board out into the workspace.", Run: syncClone},
+			{Name: "status", Short: "Show the plan of pending local changes.", Run: syncStatus},
+			{Name: "pull", Short: "Fetch remote changes (checks a board out on demand).", Run: syncPull},
+			{Name: "push", Short: "Apply local changes to the server.", Run: syncPush},
 			syncCmd(),
 			newCmd(),
 			versionCmd(),
@@ -216,18 +222,6 @@ func (c *common) client() (*mello.Client, config.Resolved, error) {
 		return nil, r, fmt.Errorf("not logged in — run `mello auth login` (or set MELLO_TOKEN)")
 	}
 	return mello.NewClient(r.BaseURL, r.Token, 30*time.Second), r, nil
-}
-
-// requireWorkspace resolves the workspace id from --workspace flag, config, or
-// MELLO_WORKSPACE; errors with guidance if unset.
-func requireWorkspace(flagVal string, r config.Resolved) (string, error) {
-	if flagVal != "" {
-		return flagVal, nil
-	}
-	if r.WorkspaceID != "" {
-		return r.WorkspaceID, nil
-	}
-	return "", fmt.Errorf("no workspace set — pass -w <id> or run `mello workspace use <id>`")
 }
 
 // ctx returns a background context with a sane timeout for one command.

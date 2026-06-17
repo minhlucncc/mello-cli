@@ -42,15 +42,12 @@ func shortID(id string) string {
 
 func ticketList(args []string) error {
 	fs, c := newFlags("ticket list")
-	board := fs.String("board", "", "board id")
-	fs.StringVar(board, "b", "", "board id (shorthand)")
+	board := fs.String("board", "", "board (default the working board)")
+	fs.StringVar(board, "b", "", "board (shorthand)")
 	colFilter := fs.String("column", "", "filter by column name or id")
 	assignee := fs.String("assignee", "", "filter by assignee id")
 	if err := parse(fs, c, args); err != nil {
 		return err
-	}
-	if *board == "" {
-		return fmt.Errorf("usage: mello ticket list -b <board> [--column C] [--assignee A]")
 	}
 	cl, _, err := c.client()
 	if err != nil {
@@ -58,7 +55,11 @@ func ticketList(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	cols, err := cl.ListColumns(cx, *board)
+	boardID, _, err := resolveBoardID(cx, cl, *board)
+	if err != nil {
+		return err
+	}
+	cols, err := cl.ListColumns(cx, boardID)
 	if err != nil {
 		return err
 	}
@@ -159,8 +160,10 @@ func ticketView(args []string) error {
 
 func ticketCreate(args []string) error {
 	fs, c := newFlags("ticket create")
-	column := fs.String("column", "", "column id")
-	fs.StringVar(column, "c", "", "column id (shorthand)")
+	board := fs.String("board", "", "board (default the working board)")
+	fs.StringVar(board, "b", "", "board (shorthand)")
+	column := fs.String("column", "", "column name (default the first column)")
+	fs.StringVar(column, "c", "", "column (shorthand)")
 	title := fs.String("title", "", "ticket title")
 	fs.StringVar(title, "t", "", "ticket title (shorthand)")
 	desc := fs.String("description", "", "ticket description")
@@ -169,8 +172,8 @@ func ticketCreate(args []string) error {
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
-	if *column == "" || *title == "" {
-		return fmt.Errorf("usage: mello ticket create -c <column> -t <title> [-d <desc>|--body-file F]")
+	if *title == "" {
+		return fmt.Errorf("usage: mello ticket create -t <title> [-b board] [-c column] [-d desc]")
 	}
 	body := *desc
 	if body == "" && *descFile != "" {
@@ -186,7 +189,31 @@ func ticketCreate(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	t, err := cl.CreateTicket(cx, *column, *title, body)
+	boardID, _, err := resolveBoardID(cx, cl, *board)
+	if err != nil {
+		return err
+	}
+	cols, err := cl.ListColumns(cx, boardID)
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 {
+		return fmt.Errorf("board has no columns — create one with `mello column create <name>`")
+	}
+	colID := cols[0].ID
+	if *column != "" {
+		colID = ""
+		for _, cc := range cols {
+			if cc.ID == *column || cc.Name == *column || strings.EqualFold(cc.Name, *column) {
+				colID = cc.ID
+				break
+			}
+		}
+		if colID == "" {
+			return fmt.Errorf("no column %q on this board (see `mello column list`)", *column)
+		}
+	}
+	t, err := cl.CreateTicket(cx, colID, *title, body)
 	if err != nil {
 		return err
 	}

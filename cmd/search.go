@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/minhlucncc/mello-cli/internal/mello"
 	"github.com/minhlucncc/mello-cli/internal/ui"
 )
 
@@ -27,19 +28,46 @@ func searchRun(args []string) error {
 	}
 	query := strings.Join(fs.Args(), " ")
 
-	cl, r, err := c.client()
-	if err != nil {
-		return err
-	}
-	ws, err := requireWorkspace(*wsFlag, r)
+	cl, _, err := c.client()
 	if err != nil {
 		return err
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	tickets, err := cl.Search(cx, ws, query)
-	if err != nil {
-		return err
+
+	// Search the -w workspace, else the current workspace, else all of them.
+	var wsIDs []string
+	if *wsFlag != "" {
+		id, err := matchWorkspace(cx, cl, *wsFlag)
+		if err != nil {
+			return err
+		}
+		wsIDs = []string{id}
+	} else if id, _, ok := currentWorkspace(); ok {
+		wsIDs = []string{id}
+	} else {
+		wss, err := cl.ListWorkspaces(cx)
+		if err != nil {
+			return err
+		}
+		for _, w := range wss {
+			wsIDs = append(wsIDs, w.ID)
+		}
+	}
+
+	var tickets []mello.Ticket
+	seen := map[string]bool{}
+	for _, id := range wsIDs {
+		hits, serr := cl.Search(cx, id, query)
+		if serr != nil {
+			continue
+		}
+		for _, t := range hits {
+			if !seen[t.ID] {
+				seen[t.ID] = true
+				tickets = append(tickets, t)
+			}
+		}
 	}
 	if c.json {
 		return ui.JSON(tickets)

@@ -19,13 +19,10 @@ func columnCmd() *Command {
 
 func columnList(args []string) error {
 	fs, c := newFlags("column list")
-	board := fs.String("board", "", "board id")
-	fs.StringVar(board, "b", "", "board id (shorthand)")
+	board := fs.String("board", "", "board (default the working board)")
+	fs.StringVar(board, "b", "", "board (shorthand)")
 	if err := parse(fs, c, args); err != nil {
 		return err
-	}
-	if *board == "" {
-		return fmt.Errorf("usage: mello column list -b <board>")
 	}
 	cl, _, err := c.client()
 	if err != nil {
@@ -33,7 +30,11 @@ func columnList(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	cols, err := cl.ListColumns(cx, *board)
+	boardID, _, err := resolveBoardID(cx, cl, *board)
+	if err != nil {
+		return err
+	}
+	cols, err := cl.ListColumns(cx, boardID)
 	if err != nil {
 		return err
 	}
@@ -50,13 +51,13 @@ func columnList(args []string) error {
 
 func columnCreate(args []string) error {
 	fs, c := newFlags("column create")
-	board := fs.String("board", "", "board id")
-	fs.StringVar(board, "b", "", "board id (shorthand)")
+	board := fs.String("board", "", "board (default the working board)")
+	fs.StringVar(board, "b", "", "board (shorthand)")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
-	if *board == "" || fs.NArg() < 1 {
-		return fmt.Errorf("usage: mello column create -b <board> <name>")
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: mello column create <name> [-b <board>]")
 	}
 	cl, _, err := c.client()
 	if err != nil {
@@ -64,7 +65,11 @@ func columnCreate(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	col, err := cl.CreateColumn(cx, *board, fs.Arg(0))
+	boardID, _, err := resolveBoardID(cx, cl, *board)
+	if err != nil {
+		return err
+	}
+	col, err := cl.CreateColumn(cx, boardID, fs.Arg(0))
 	if err != nil {
 		return err
 	}
