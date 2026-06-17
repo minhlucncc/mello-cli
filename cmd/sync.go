@@ -279,12 +279,15 @@ func syncPush(args []string) error {
 	all := fs.Bool("all", false, "all boards in the workspace")
 	dryRun := fs.Bool("dry-run", false, "show what would be pushed, change nothing")
 	force := fs.Bool("force", false, "push conflicts (local over remote)")
+	note := fs.String("comment", "", "post a comment on each changed ticket noting the push")
+	fs.StringVar(note, "m", "", "comment/message (shorthand)")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
 	cx, cancel := ctx()
 	defer cancel()
 	return forEachBoard(c, *dir, *board, *all, func(s *syncpkg.Syncer) error {
+		s.Note = *note
 		plan, err := s.ComputePlan(cx, true)
 		if err != nil {
 			return err

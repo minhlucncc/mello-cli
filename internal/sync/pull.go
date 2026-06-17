@@ -39,6 +39,9 @@ type Syncer struct {
 	Board *BoardState
 	Log   Logf
 
+	// Note, when set, is posted as a comment on each ticket changed by a push.
+	Note string
+
 	// capability flags discovered at runtime (optional endpoints).
 	noComments    bool
 	noAttachments bool

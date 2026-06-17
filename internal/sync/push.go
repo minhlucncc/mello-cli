@@ -215,6 +215,7 @@ func (s *Syncer) applyCreate(ctx context.Context, ch Change, idToName, nameToID 
 		}
 	}
 	s.logf("+ created %s (%s)", firstNonEmpty(t.TicketCode, shortRef(t.ID)), ch.Slug)
+	s.postNote(ctx, t.ID, ch.Ref)
 	fresh, err := s.API.GetTicket(ctx, t.ID)
 	if err != nil {
 		fresh = t
@@ -261,10 +262,23 @@ func (s *Syncer) applyUpdate(ctx context.Context, ch Change, idToName, nameToID 
 		}
 		s.logf("~ uploaded %s to %s", filepath.Base(path), ch.Ref)
 	}
+	s.postNote(ctx, ch.RemoteID, ch.Ref)
 	if t, err := s.API.GetTicket(ctx, ch.RemoteID); err == nil {
 		return s.writeTicket(ctx, t, idToName[t.ColumnID], ch.Slug, false)
 	}
 	return nil
+}
+
+// postNote posts the push note (if set) as a comment on a ticket.
+func (s *Syncer) postNote(ctx context.Context, ticketID, ref string) {
+	if s.Note == "" {
+		return
+	}
+	if _, err := s.API.AddComment(ctx, ticketID, s.Note); err != nil {
+		s.logf("note comment failed on %s: %v", ref, err)
+		return
+	}
+	s.logf("~ noted change on %s", ref)
 }
 
 func (s *Syncer) describe(ch Change) {
