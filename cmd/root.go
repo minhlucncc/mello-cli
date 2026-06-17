@@ -261,11 +261,32 @@ func ctx() (context.Context, context.CancelFunc) {
 
 func printHelp(root, group *Command) {
 	if group == nil || group == root {
-		fmt.Printf("%s\n\n%s\n\nUsage:\n  mello <command> [subcommand] [flags]\n\nCommands:\n", ui.Bold("mello "+Version), root.Short)
-		for _, s := range root.Subs {
-			fmt.Printf("  %-12s %s\n", s.Name, s.Short)
-		}
-		fmt.Printf("\nGlobal flags:\n  -p, --profile   config profile\n      --base-url  override API base URL\n      --json      output raw JSON\n      --no-color  disable color\n  -v, --version   print version information\n\nRun `mello <command> help` for subcommands.\n")
+		fmt.Printf("%s — work with Mello boards & tickets from the terminal\n\n", ui.Bold("mello "+Version))
+		fmt.Print(`SETUP
+  mello auth login                 sign in (paste a token or session refresh token)
+  mello use <board>                choose the board you're working on
+
+TICKETS  (act on the working board — no -b/-w needed)
+  mello ticket list                list tickets           (--mine, --column <name>)
+  mello ticket view <id>           show a ticket in full
+  mello ticket create -t "<title>" create a ticket        (-c <column>, -d <desc>)
+  mello ticket edit <id> ...       edit fields            (--status, --assignee me, --labels)
+  mello ticket move <id> <column>  move it, e.g. mello ticket move PROJ-2 Done
+  mello comment add <id> -b "..."  add a comment
+  mello attachment add <id> <file> attach a file
+
+WORK LOCALLY  (edit offline, then push)
+  mello pull <id>                  copy a ticket into ./.mello to edit
+  mello status                     show pending local changes
+  mello push                       send changes back      (-m "note")
+
+BROWSE
+  mello board list   ·   mello column list   ·   mello member list
+  mello search "<query>"
+
+`)
+		fmt.Print("Flags: -p/--profile  --base-url  --json  --no-color  -v/--version\n")
+		fmt.Print("Help:  mello <command> -h   ·   also: workspace, untrack, new, sync, cache, init\n")
 		return
 	}
 	fmt.Printf("%s — %s\n\n", ui.Bold("mello "+group.Name), group.Short)
