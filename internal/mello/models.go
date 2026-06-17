@@ -37,12 +37,66 @@ func (l *Labels) UnmarshalJSON(data []byte) error {
 }
 
 func labelName(o map[string]any) string {
-	for _, k := range []string{"name", "title", "label", "value", "text", "id"} {
+	return pickStr(o, "name", "title", "label", "value", "text", "id")
+}
+
+func pickStr(o map[string]any, keys ...string) string {
+	for _, k := range keys {
 		if v, ok := o[k].(string); ok && v != "" {
 			return v
 		}
 	}
 	return ""
+}
+
+// TicketMember is a user assigned to a ticket.
+type TicketMember struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+// Members is a ticket's assignees. Tickets may have several. Accepts arrays of
+// ids (strings) or of objects with id/user_id and name (optionally nested under
+// "user").
+type Members []TicketMember
+
+// UnmarshalJSON accepts ["u1","u2"], [{"user_id":"u1","name":"Minh"}], or null.
+func (ms *Members) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*ms = nil
+		return nil
+	}
+	var ss []string
+	if json.Unmarshal(data, &ss) == nil {
+		out := make(Members, 0, len(ss))
+		for _, s := range ss {
+			out = append(out, TicketMember{ID: s})
+		}
+		*ms = out
+		return nil
+	}
+	var objs []map[string]any
+	if err := json.Unmarshal(data, &objs); err != nil {
+		return err
+	}
+	out := make(Members, 0, len(objs))
+	for _, o := range objs {
+		tm := TicketMember{
+			ID:   pickStr(o, "user_id", "id", "userId", "member_id"),
+			Name: pickStr(o, "name", "display_name", "full_name", "username", "email"),
+		}
+		if u, ok := o["user"].(map[string]any); ok {
+			if tm.ID == "" {
+				tm.ID = pickStr(u, "id", "user_id")
+			}
+			if tm.Name == "" {
+				tm.Name = pickStr(u, "name", "display_name", "username", "email")
+			}
+		}
+		out = append(out, tm)
+	}
+	*ms = out
+	return nil
 }
 
 // Workspace is a scoped container for boards and members. JSON tags match the
@@ -82,9 +136,36 @@ type Ticket struct {
 	Position    int        `json:"position,omitempty"`
 	Status      string     `json:"status,omitempty"`
 	AssigneeID  string     `json:"assignee_id,omitempty"`
+	Members     Members    `json:"members,omitempty"`
+	Assignees   Members    `json:"assignees,omitempty"`
 	Labels      Labels     `json:"labels,omitempty"`
 	CreatedAt   *time.Time `json:"created_at,omitempty"`
 	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+}
+
+// AssigneeMembers returns the ticket's assignees, however the API names them
+// (members, assignees, or a single assignee_id).
+func (t Ticket) AssigneeMembers() Members {
+	if len(t.Members) > 0 {
+		return t.Members
+	}
+	if len(t.Assignees) > 0 {
+		return t.Assignees
+	}
+	if t.AssigneeID != "" {
+		return Members{{ID: t.AssigneeID}}
+	}
+	return nil
+}
+
+// HasMember reports whether userID is among the ticket's assignees.
+func (t Ticket) HasMember(userID string) bool {
+	for _, m := range t.AssigneeMembers() {
+		if m.ID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // Comment is a markdown annotation on a ticket.

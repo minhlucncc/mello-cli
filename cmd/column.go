@@ -34,7 +34,7 @@ func columnList(args []string) error {
 	if err != nil {
 		return err
 	}
-	cols, err := cl.ListColumns(cx, boardID)
+	cols, err := cachedColumns(cx, cl, boardID)
 	if err != nil {
 		return err
 	}
@@ -73,6 +73,7 @@ func columnCreate(args []string) error {
 	if err != nil {
 		return err
 	}
+	invalidateCache("columns:" + boardID)
 	if c.json {
 		return ui.JSON(col)
 	}

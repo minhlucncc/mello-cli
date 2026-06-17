@@ -29,7 +29,7 @@ func memberList(args []string) error {
 	if err != nil {
 		return err
 	}
-	members, err := cl.ListMembers(cx, ws)
+	members, err := cachedMembers(cx, cl, ws)
 	if err != nil {
 		return err
 	}

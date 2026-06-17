@@ -29,7 +29,7 @@ func workspaceList(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	ws, err := cl.ListWorkspaces(cx)
+	ws, err := cachedWorkspaces(cx, cl)
 	if err != nil {
 		return err
 	}
@@ -60,7 +60,7 @@ func workspaceUse(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	ws, err := cl.ListWorkspaces(cx)
+	ws, err := cachedWorkspaces(cx, cl)
 	if err != nil {
 		return err
 	}

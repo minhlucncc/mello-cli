@@ -72,7 +72,7 @@ func ticketList(args []string) error {
 	if err != nil {
 		return err
 	}
-	cols, err := cl.ListColumns(cx, boardID)
+	cols, err := cachedColumns(cx, cl, boardID)
 	if err != nil {
 		return err
 	}
@@ -82,7 +82,7 @@ func ticketList(args []string) error {
 	}
 
 	// Prefer the workspace tickets endpoint, which returns full ticket records
-	// (status, assignee). Fall back to the columns summary when unavailable.
+	// (status, members). Fall back to the columns summary when unavailable.
 	var tickets []mello.Ticket
 	nameByID := map[string]string{}
 	enriched := false
@@ -97,13 +97,7 @@ func ticketList(args []string) error {
 		} else if !mello.IsNotFound(lerr) {
 			return lerr
 		}
-		if members, merr := cl.ListMembers(cx, wsID); merr == nil {
-			for _, m := range members {
-				if m.Name != "" {
-					nameByID[m.UserID] = m.Name
-				}
-			}
-		}
+		nameByID = memberNames(cx, cl, wsID)
 	}
 	if !enriched {
 		for _, col := range cols {
@@ -126,7 +120,7 @@ func ticketList(args []string) error {
 		if *colFilter != "" && colN != *colFilter && t.ColumnID != *colFilter {
 			continue
 		}
-		if assigneeID != "" && t.AssigneeID != assigneeID {
+		if assigneeID != "" && !t.HasMember(assigneeID) {
 			continue
 		}
 		if *statusFilter != "" && !strings.EqualFold(t.Status, *statusFilter) {
@@ -145,11 +139,11 @@ func ticketList(args []string) error {
 	rows := make([][]string, 0, len(collected))
 	for _, r := range collected {
 		rows = append(rows, []string{
-			ticketRef(r.t), r.col, assigneeDisplay(r.t.AssigneeID, nameByID),
+			ticketRef(r.t), r.col, membersDisplay(r.t, nameByID),
 			emptyDash(r.t.Status), ui.Truncate(r.t.Title, 50),
 		})
 	}
-	ui.Table([]string{"ticket", "column", "assignee", "status", "title"}, rows)
+	ui.Table([]string{"ticket", "column", "members", "status", "title"}, rows)
 	if len(rows) == 0 {
 		fmt.Println(ui.Dim("no tickets"))
 	}
@@ -194,7 +188,7 @@ func ticketView(args []string) error {
 	// Resolve the column name when the board is known.
 	colName := t.ColumnID
 	if t.BoardID != "" {
-		if cols, cerr := cl.ListColumns(cx, t.BoardID); cerr == nil {
+		if cols, cerr := cachedColumns(cx, cl, t.BoardID); cerr == nil {
 			for _, col := range cols {
 				if col.ID == t.ColumnID {
 					colName = col.Name
@@ -204,23 +198,14 @@ func ticketView(args []string) error {
 		}
 	}
 
-	assignee := emptyDash(t.AssigneeID)
-	if t.AssigneeID != "" {
-		if wsID, _, ok := currentWorkspace(); ok {
-			if members, merr := cl.ListMembers(cx, wsID); merr == nil {
-				for _, m := range members {
-					if m.UserID == t.AssigneeID && m.Name != "" {
-						assignee = m.Name
-						break
-					}
-				}
-			}
-		}
+	nameByID := map[string]string{}
+	if wsID, _, ok := currentWorkspace(); ok {
+		nameByID = memberNames(cx, cl, wsID)
 	}
 
 	fmt.Printf("%s  %s\n\n", ui.Bold(ticketRef(t)), t.Title)
 	field("Status", emptyDash(t.Status))
-	field("Assignee", assignee)
+	field("Members", membersDisplay(t, nameByID))
 	field("Labels", emptyDash(strings.Join(t.Labels, ", ")))
 	field("Column", emptyDash(colName))
 	if t.BoardID != "" {
@@ -508,15 +493,25 @@ func emptyDash(s string) string {
 	return s
 }
 
-// assigneeDisplay shows a member's name when known, else a short id, else "-".
-func assigneeDisplay(id string, names map[string]string) string {
-	if id == "" {
+// membersDisplay joins a ticket's assignees, preferring inline names, then the
+// cached member-name map, then a short id.
+func membersDisplay(t mello.Ticket, names map[string]string) string {
+	ms := t.AssigneeMembers()
+	if len(ms) == 0 {
 		return "-"
 	}
-	if n, ok := names[id]; ok && n != "" {
-		return n
+	parts := make([]string, 0, len(ms))
+	for _, m := range ms {
+		n := m.Name
+		if n == "" {
+			n = names[m.ID]
+		}
+		if n == "" {
+			n = ui.Truncate(m.ID, 12)
+		}
+		parts = append(parts, n)
 	}
-	return ui.Truncate(id, 12)
+	return strings.Join(parts, ", ")
 }
 
 func splitCSV(s string) []string {

@@ -57,6 +57,7 @@ func Root() *Command {
 			untrackCmd(),
 			syncCmd(),
 			newCmd(),
+			cacheCmd(),
 			versionCmd(),
 		},
 	}

@@ -48,7 +48,7 @@ func boardList(args []string) error {
 		workspaces = []mello.Workspace{{ID: id, Name: name}}
 	} else {
 		// Otherwise discover boards across all accessible workspaces.
-		workspaces, err = cl.ListWorkspaces(cx)
+		workspaces, err = cachedWorkspaces(cx, cl)
 		if err != nil {
 			return err
 		}
@@ -60,7 +60,7 @@ func boardList(args []string) error {
 	}
 	var all []entry
 	for _, w := range workspaces {
-		boards, berr := cl.ListBoards(cx, w.ID)
+		boards, berr := cachedBoards(cx, cl, w.ID)
 		if berr != nil {
 			continue
 		}
@@ -118,6 +118,7 @@ func boardCreate(args []string) error {
 	if err != nil {
 		return err
 	}
+	invalidateCache("boards:" + ws)
 	if c.json {
 		return ui.JSON(b)
 	}
