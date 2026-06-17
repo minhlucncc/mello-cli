@@ -24,10 +24,10 @@ func (s *Syncer) ComputePlan(ctx context.Context, checkRemote bool) (Plan, error
 
 	// Union of slugs present on disk and tracked in state.
 	slugSet := map[string]bool{}
-	for _, slug := range s.Tree.scanTicketDirs() {
+	for _, slug := range s.Tree.scanTicketDirs(s.Board.Slug) {
 		slugSet[slug] = true
 	}
-	for slug := range s.Tree.State.Tickets {
+	for slug := range s.Board.Tickets {
 		slugSet[slug] = true
 	}
 	slugs := make([]string, 0, len(slugSet))
@@ -38,8 +38,8 @@ func (s *Syncer) ComputePlan(ctx context.Context, checkRemote bool) (Plan, error
 
 	var plan Plan
 	for _, slug := range slugs {
-		dir := s.Tree.ticketDir(slug)
-		rec := s.Tree.State.Tickets[slug]
+		dir := s.ticketDir(slug)
+		rec := s.Board.Tickets[slug]
 		_, statErr := os.Stat(filepath.Join(dir, "ticket.md"))
 		folderExists := statErr == nil
 
@@ -146,7 +146,7 @@ func (s *Syncer) Apply(ctx context.Context, plan Plan, dryRun, force bool) error
 					return err
 				}
 			} else {
-				delete(s.Tree.State.Tickets, ch.Slug)
+				delete(s.Board.Tickets, ch.Slug)
 				s.logf("- deleted %s", ch.Ref)
 				applied++
 			}

@@ -1,14 +1,20 @@
 # The local working copy
 
-`mello sync clone` creates a `.mello` directory that mirrors a Mello board on
-local disk. You edit the mirrored files offline, review the resulting changes,
-and synchronize them with the server on demand.
+A `.mello` directory is a workspace that mirrors one or more Mello boards on local
+disk. You edit the mirrored files offline, review the resulting changes, and
+synchronize them with the server on demand.
+
+Create a workspace with `mello init` (empty) or `mello sync clone -b <board>`
+(creates the workspace if needed and checks a board out). Add further boards with
+additional `mello sync clone -b <board>` calls. Commands act on the only board
+when there is one; with several, `-b <board>` scopes to one and
+`status`/`pull`/`push` cover all boards by default.
 
 ## Directory layout
 
 ```
 .mello/
-  state.json                       # tracked board, sync cursor, and per-ticket baselines
+  state.json                       # workspace, boards, sync cursors, and per-ticket baselines
   journal.log                      # an audit line per push
   boards/<board>/
     tickets/<ticket>/

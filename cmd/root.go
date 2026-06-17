@@ -47,6 +47,7 @@ func Root() *Command {
 			attachmentCmd(),
 			memberCmd(),
 			searchCmd(),
+			initCmd(),
 			syncCmd(),
 			newCmd(),
 			versionCmd(),

@@ -10,12 +10,12 @@ import (
 func syncCmd() *Command {
 	return &Command{
 		Name:  "sync",
-		Short: "Local↔remote board mirror: clone, status, pull, push, sync.",
+		Short: "Synchronize the local workspace with Mello.",
 		Subs: []*Command{
-			{Name: "clone", Short: "Pull a board into a local .mello working copy.", Run: syncClone},
+			{Name: "clone", Short: "Check a board out into the workspace.", Run: syncClone},
 			{Name: "status", Short: "Show the plan of pending local changes.", Run: syncStatus},
-			{Name: "pull", Short: "Fetch remote changes into the working copy.", Run: syncPull},
-			{Name: "push", Short: "Apply local creates/edits/moves/deletes to remote.", Run: syncPush},
+			{Name: "pull", Short: "Fetch remote changes into the workspace.", Run: syncPull},
+			{Name: "push", Short: "Apply local changes to the server.", Run: syncPush},
 			{Name: "sync", Short: "Reconcile: pull then push.", Run: syncReconcile},
 		},
 	}
@@ -24,10 +24,10 @@ func syncCmd() *Command {
 func syncClone(args []string) error {
 	fs, c := newFlags("sync clone")
 	board := fs.String("board", "", "board id or code")
-	fs.StringVar(board, "b", "", "board id (shorthand)")
+	fs.StringVar(board, "b", "", "board id or code (shorthand)")
 	wsFlag := fs.String("workspace", "", "workspace id")
 	fs.StringVar(wsFlag, "w", "", "workspace id (shorthand)")
-	dir := fs.String("dir", ".", "destination directory for the .mello working copy")
+	dir := fs.String("dir", ".", "workspace directory")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
@@ -38,183 +38,202 @@ func syncClone(args []string) error {
 	if err != nil {
 		return err
 	}
-	ws, err := requireWorkspace(*wsFlag, r)
-	if err != nil {
-		return err
-	}
 	cx, cancel := ctx()
 	defer cancel()
 
-	boards, err := cl.ListBoards(cx, ws)
+	// Open an existing workspace or initialize a new one in --dir.
+	var tree *syncpkg.Tree
+	if syncpkg.Exists(*dir) {
+		tree, err = syncpkg.Open(*dir)
+		if err != nil {
+			return err
+		}
+		if *wsFlag != "" && *wsFlag != tree.State.WorkspaceID {
+			return fmt.Errorf("this workspace tracks %s; -w %s does not match", tree.State.WorkspaceID, *wsFlag)
+		}
+	} else {
+		ws, werr := requireWorkspace(*wsFlag, r)
+		if werr != nil {
+			return werr
+		}
+		tree, err = syncpkg.InitWorkspace(*dir, &syncpkg.State{
+			Profile: r.Profile, BaseURL: r.BaseURL, WorkspaceID: ws,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	boards, err := cl.ListBoards(cx, tree.State.WorkspaceID)
 	if err != nil {
 		return err
 	}
-	name, code, id := "", "", ""
+	var bs *syncpkg.BoardState
 	for _, b := range boards {
 		if b.ID == *board || b.Code == *board {
-			name, code, id = b.Name, b.Code, b.ID
+			slug := syncpkg.Slugify(firstNonEmpty(b.Code, b.Name))
+			if existing := tree.State.Boards[slug]; existing != nil {
+				bs = existing
+			} else {
+				bs = &syncpkg.BoardState{BoardID: b.ID, Slug: slug, Name: b.Name, Code: b.Code}
+				tree.AddBoard(bs)
+			}
 			break
 		}
 	}
-	if id == "" {
-		return fmt.Errorf("no board %q in workspace (run `mello board list`)", *board)
+	if bs == nil {
+		return fmt.Errorf("no board %q in the workspace (run `mello board list`)", *board)
 	}
-	slug := syncpkg.Slugify(firstSlug(code, name))
 
-	tree, err := syncpkg.Init(*dir, &syncpkg.State{
-		Profile: r.Profile, BaseURL: r.BaseURL, WorkspaceID: ws,
-		BoardID: id, BoardSlug: slug, BoardName: name,
-	})
-	if err != nil {
-		return err
-	}
-	s := &syncpkg.Syncer{API: cl, Tree: tree, Log: logfUI}
+	s := &syncpkg.Syncer{API: cl, Tree: tree, Board: bs, Log: logfUI}
 	n, err := s.Clone(cx)
 	if err != nil {
 		return err
 	}
-	ui.Successf("Cloned board %s — %d ticket(s) into %s/%s", ui.Bold(name), n, tree.Root, syncpkg.DirName)
+	ui.Successf("Checked out board %s — %d ticket(s)", ui.Bold(bs.Name), n)
+	return nil
+}
+
+// forEachBoard runs fn for each selected board, printing a header when more than
+// one board is involved.
+func forEachBoard(c *common, dir, boardSel string, fn func(*syncpkg.Syncer) error) error {
+	tree, err := syncpkg.Open(dir)
+	if err != nil {
+		return err
+	}
+	boards, err := tree.SelectBoards(boardSel)
+	if err != nil {
+		return err
+	}
+	cl, _, err := c.client()
+	if err != nil {
+		return err
+	}
+	multi := len(boards) > 1
+	for _, bs := range boards {
+		if multi {
+			fmt.Printf("%s\n", ui.Bold(bs.Name))
+		}
+		s := &syncpkg.Syncer{API: cl, Tree: tree, Board: bs, Log: logfUI}
+		if err := fn(s); err != nil {
+			return fmt.Errorf("board %s: %w", bs.Name, err)
+		}
+	}
 	return nil
 }
 
 func syncStatus(args []string) error {
 	fs, c := newFlags("sync status")
-	dir := fs.String("dir", ".", "working copy directory")
+	dir := fs.String("dir", ".", "workspace directory")
+	board := fs.String("board", "", "limit to one board (id, code, name, or slug)")
+	fs.StringVar(board, "b", "", "limit to one board (shorthand)")
 	remote := fs.Bool("remote", false, "also fetch remote to detect drift/conflicts")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
-	tree, err := syncpkg.Open(*dir)
-	if err != nil {
-		return err
-	}
-	cl, _, err := c.client()
-	if err != nil {
-		return err
-	}
 	cx, cancel := ctx()
 	defer cancel()
-	s := &syncpkg.Syncer{API: cl, Tree: tree}
-	plan, err := s.ComputePlan(cx, *remote)
-	if err != nil {
-		return err
-	}
-	if c.json {
-		return ui.JSON(plan)
-	}
-	printPlan(plan, tree.State.Serial)
-	return nil
+	return forEachBoard(c, *dir, *board, func(s *syncpkg.Syncer) error {
+		plan, err := s.ComputePlan(cx, *remote)
+		if err != nil {
+			return err
+		}
+		if c.json {
+			return ui.JSON(plan)
+		}
+		printPlan(plan, s.Tree.State.Serial)
+		return nil
+	})
 }
 
 func syncPull(args []string) error {
 	fs, c := newFlags("sync pull")
-	dir := fs.String("dir", ".", "working copy directory")
+	dir := fs.String("dir", ".", "workspace directory")
+	board := fs.String("board", "", "limit to one board")
+	fs.StringVar(board, "b", "", "limit to one board (shorthand)")
 	if err := parse(fs, c, args); err != nil {
-		return err
-	}
-	tree, err := syncpkg.Open(*dir)
-	if err != nil {
-		return err
-	}
-	cl, _, err := c.client()
-	if err != nil {
 		return err
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	s := &syncpkg.Syncer{API: cl, Tree: tree, Log: logfUI}
-	updated, deleted, err := s.Pull(cx)
-	if err != nil {
-		return err
-	}
-	if len(s.Conflicts) > 0 {
-		ui.Warnf("%d conflict(s) — resolve, then `mello sync push`", len(s.Conflicts))
-	}
-	ui.Successf("Pulled: %d updated, %d removed (serial %d)", updated, deleted, tree.State.Serial)
-	return nil
+	return forEachBoard(c, *dir, *board, func(s *syncpkg.Syncer) error {
+		updated, deleted, err := s.Pull(cx)
+		if err != nil {
+			return err
+		}
+		if len(s.Conflicts) > 0 {
+			ui.Warnf("%d conflict(s) — resolve, then `mello sync push`", len(s.Conflicts))
+		}
+		ui.Successf("Pulled: %d updated, %d removed (serial %d)", updated, deleted, s.Tree.State.Serial)
+		return nil
+	})
 }
 
 func syncPush(args []string) error {
 	fs, c := newFlags("sync push")
-	dir := fs.String("dir", ".", "working copy directory")
+	dir := fs.String("dir", ".", "workspace directory")
+	board := fs.String("board", "", "limit to one board")
+	fs.StringVar(board, "b", "", "limit to one board (shorthand)")
 	dryRun := fs.Bool("dry-run", false, "show what would be pushed, change nothing")
 	force := fs.Bool("force", false, "push conflicts (local over remote)")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
-	tree, err := syncpkg.Open(*dir)
-	if err != nil {
-		return err
-	}
-	cl, _, err := c.client()
-	if err != nil {
-		return err
-	}
 	cx, cancel := ctx()
 	defer cancel()
-	s := &syncpkg.Syncer{API: cl, Tree: tree, Log: logfUI}
-	plan, err := s.ComputePlan(cx, true)
-	if err != nil {
-		return err
-	}
-	if len(plan.Changes) == 0 {
-		fmt.Println(ui.Dim("clean — nothing to push"))
+	return forEachBoard(c, *dir, *board, func(s *syncpkg.Syncer) error {
+		plan, err := s.ComputePlan(cx, true)
+		if err != nil {
+			return err
+		}
+		if len(plan.Changes) == 0 {
+			fmt.Println(ui.Dim("clean — nothing to push"))
+			return nil
+		}
+		if err := s.Apply(cx, plan, *dryRun, *force); err != nil {
+			return err
+		}
+		if *dryRun {
+			ui.Warnf("dry-run — nothing was sent")
+		} else {
+			ui.Successf("Push complete (serial %d)", s.Tree.State.Serial)
+		}
 		return nil
-	}
-	if err := s.Apply(cx, plan, *dryRun, *force); err != nil {
-		return err
-	}
-	if *dryRun {
-		ui.Warnf("dry-run — nothing was sent")
-	} else {
-		ui.Successf("Push complete (serial %d)", tree.State.Serial)
-	}
-	return nil
+	})
 }
 
 func syncReconcile(args []string) error {
 	fs, c := newFlags("sync sync")
-	dir := fs.String("dir", ".", "working copy directory")
+	dir := fs.String("dir", ".", "workspace directory")
+	board := fs.String("board", "", "limit to one board")
+	fs.StringVar(board, "b", "", "limit to one board (shorthand)")
 	force := fs.Bool("force", false, "push conflicts (local over remote)")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
-	tree, err := syncpkg.Open(*dir)
-	if err != nil {
-		return err
-	}
-	cl, _, err := c.client()
-	if err != nil {
-		return err
-	}
 	cx, cancel := ctx()
 	defer cancel()
-	s := &syncpkg.Syncer{API: cl, Tree: tree, Log: logfUI}
-
-	fmt.Println(ui.Bold("pull:"))
-	updated, deleted, err := s.Pull(cx)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("  %d updated, %d removed\n", updated, deleted)
-	if len(s.Conflicts) > 0 && !*force {
-		ui.Warnf("%d conflict(s) — resolve then push (or rerun with --force)", len(s.Conflicts))
-	}
-
-	fmt.Println(ui.Bold("push:"))
-	plan, err := s.ComputePlan(cx, true)
-	if err != nil {
-		return err
-	}
-	if len(plan.Changes) == 0 {
-		fmt.Println(ui.Dim("  clean"))
+	return forEachBoard(c, *dir, *board, func(s *syncpkg.Syncer) error {
+		if _, _, err := s.Pull(cx); err != nil {
+			return err
+		}
+		if len(s.Conflicts) > 0 && !*force {
+			ui.Warnf("%d conflict(s) — resolve then push (or rerun with --force)", len(s.Conflicts))
+		}
+		plan, err := s.ComputePlan(cx, true)
+		if err != nil {
+			return err
+		}
+		if len(plan.Changes) == 0 {
+			fmt.Println(ui.Dim("clean"))
+			return nil
+		}
+		if err := s.Apply(cx, plan, false, *force); err != nil {
+			return err
+		}
+		ui.Successf("Reconciled (serial %d)", s.Tree.State.Serial)
 		return nil
-	}
-	if err := s.Apply(cx, plan, false, *force); err != nil {
-		return err
-	}
-	ui.Successf("Reconciled (serial %d)", tree.State.Serial)
-	return nil
+	})
 }
 
 // printPlan renders the set of pending changes with status markers.
@@ -228,12 +247,8 @@ func printPlan(plan syncpkg.Plan, serial int) {
 		switch ch.Kind {
 		case syncpkg.KindCreate:
 			sym = ui.Green(sym)
-		case syncpkg.KindDelete:
+		case syncpkg.KindDelete, syncpkg.KindConflict:
 			sym = ui.Red(sym)
-		case syncpkg.KindConflict:
-			sym = ui.Red(sym)
-		case syncpkg.KindRemote:
-			sym = ui.Yellow(sym)
 		default:
 			sym = ui.Yellow(sym)
 		}
@@ -286,11 +301,4 @@ func changeTags(ch syncpkg.Change) string {
 
 func logfUI(format string, a ...any) {
 	fmt.Printf("  %s\n", fmt.Sprintf(format, a...))
-}
-
-func firstSlug(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }

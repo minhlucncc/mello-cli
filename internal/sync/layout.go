@@ -1,52 +1,62 @@
-// Package sync implements the local working copy of a Mello board.
+// Package sync implements the local working copy of a Mello workspace.
 //
-// Each ticket is tracked at three reference points: the remote (the API), the
-// baseline (.mello/state.json plus ticket.json, the last synchronized state used
-// as the diff base), and the working copy (ticket.md and the comment/attachment
-// files the user edits). Differences are detected by content hash. clone and
-// pull bring remote state down; push applies local creates, updates, moves, and
-// deletes; sync performs a pull followed by a push.
+// A working copy (the .mello directory) tracks one workspace and one or more
+// boards beneath it. Each ticket is tracked at three reference points: the
+// remote (the API), the baseline (state.json plus ticket.json, the last
+// synchronized state used as the diff base), and the working copy (ticket.md
+// and the comment/attachment files the user edits). Differences are detected by
+// content hash. clone and pull bring remote state down; push applies local
+// creates, updates, moves, and deletes; sync performs a pull followed by a push.
 package sync
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
 
-// DirName is the working-directory marker (like .git).
+// DirName is the working-directory marker.
 const DirName = ".mello"
 
 // stateVersion is the on-disk schema version of state.json.
-const stateVersion = 2
+const stateVersion = 3
 
-// State is the ledger in .mello/state.json: what this checkout tracks, the
-// incremental cursor, a monotonically increasing serial (a version stamp bumped
-// on every successful sync), and per-ticket baselines keyed by stable local slug.
+// State is the workspace ledger in .mello/state.json. It records the tracked
+// workspace, a monotonic serial bumped on each successful synchronization, and
+// the boards checked out beneath it.
 type State struct {
-	Version     int                      `json:"version"`
-	Serial      int                      `json:"serial"`
-	Profile     string                   `json:"profile,omitempty"`
-	BaseURL     string                   `json:"base_url,omitempty"`
-	WorkspaceID string                   `json:"workspace_id"`
-	BoardID     string                   `json:"board_id"`
-	BoardSlug   string                   `json:"board_slug"`
-	BoardName   string                   `json:"board_name,omitempty"`
-	Cursor      string                   `json:"cursor,omitempty"` // updated_after (RFC3339)
-	Tickets     map[string]*TicketRecord `json:"tickets"`          // keyed by local slug
+	Version       int                    `json:"version"`
+	Serial        int                    `json:"serial"`
+	Profile       string                 `json:"profile,omitempty"`
+	BaseURL       string                 `json:"base_url,omitempty"`
+	WorkspaceID   string                 `json:"workspace_id"`
+	WorkspaceName string                 `json:"workspace_name,omitempty"`
+	CurrentBoard  string                 `json:"current_board,omitempty"` // default board slug
+	Boards        map[string]*BoardState `json:"boards"`                  // keyed by board slug
+}
+
+// BoardState is one board checked out into the workspace.
+type BoardState struct {
+	BoardID string                   `json:"board_id"`
+	Slug    string                   `json:"slug"`
+	Name    string                   `json:"name,omitempty"`
+	Code    string                   `json:"code,omitempty"`
+	Cursor  string                   `json:"cursor,omitempty"` // updated_after (RFC3339)
+	Tickets map[string]*TicketRecord `json:"tickets"`          // keyed by ticket slug
 }
 
 // TicketRecord is the baseline bookkeeping for one ticket. RemoteID empty means
-// the ticket exists only locally and will be CREATED on push.
+// the ticket exists only locally and will be created on push.
 type TicketRecord struct {
 	Slug          string            `json:"slug"`
 	RemoteID      string            `json:"remote_id,omitempty"`
-	Code          string            `json:"code,omitempty"` // ticket code, for display
+	Code          string            `json:"code,omitempty"`
 	ColumnID      string            `json:"column_id,omitempty"`
-	BaselineHash  string            `json:"baseline_hash,omitempty"` // HashTicket at last sync
+	BaselineHash  string            `json:"baseline_hash,omitempty"`
 	RemoteUpdated string            `json:"remote_updated_at,omitempty"`
 	CommentIDs    []string          `json:"comment_ids,omitempty"`
 	Attachments   map[string]string `json:"attachments,omitempty"` // filename -> content hash
@@ -70,13 +80,19 @@ func FindRoot(start string) (string, error) {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", errors.New("not a mello working copy (no .mello here or in any parent) — run `mello sync clone` first")
+			return "", errors.New("not a mello workspace (no .mello here or in any parent) — run `mello init` or `mello sync clone` first")
 		}
 		dir = parent
 	}
 }
 
-// Open loads the working copy whose .mello lives in or above start.
+// Exists reports whether a .mello workspace exists in dir itself.
+func Exists(dir string) bool {
+	fi, err := os.Stat(filepath.Join(dir, DirName))
+	return err == nil && fi.IsDir()
+}
+
+// Open loads the workspace whose .mello lives in or above start.
 func Open(start string) (*Tree, error) {
 	root, err := FindRoot(start)
 	if err != nil {
@@ -89,11 +105,11 @@ func Open(start string) (*Tree, error) {
 	return &Tree{Root: root, State: st}, nil
 }
 
-// Init creates a fresh .mello working copy at root with the given state.
-func Init(root string, st *State) (*Tree, error) {
+// InitWorkspace creates a fresh .mello workspace at root.
+func InitWorkspace(root string, st *State) (*Tree, error) {
 	st.Version = stateVersion
-	if st.Tickets == nil {
-		st.Tickets = map[string]*TicketRecord{}
+	if st.Boards == nil {
+		st.Boards = map[string]*BoardState{}
 	}
 	if err := os.MkdirAll(filepath.Join(root, DirName), 0o755); err != nil {
 		return nil, err
@@ -114,12 +130,7 @@ func (t *Tree) Save() error {
 }
 
 func loadState(root string) (*State, error) {
-	// state.json is canonical; fall back to the legacy "config" name.
-	path := filepath.Join(root, DirName, "state.json")
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		data, err = os.ReadFile(filepath.Join(root, DirName, "config"))
-	}
+	data, err := os.ReadFile(filepath.Join(root, DirName, "state.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -127,57 +138,109 @@ func loadState(root string) (*State, error) {
 	if err := json.Unmarshal(data, &st); err != nil {
 		return nil, err
 	}
-	if st.Tickets == nil {
-		st.Tickets = map[string]*TicketRecord{}
+	if st.Boards == nil {
+		st.Boards = map[string]*BoardState{}
+	}
+	for _, bs := range st.Boards {
+		if bs.Tickets == nil {
+			bs.Tickets = map[string]*TicketRecord{}
+		}
 	}
 	return &st, nil
 }
 
-// record returns (creating if needed) the record for a slug.
-func (t *Tree) record(slug string) *TicketRecord {
-	r := t.State.Tickets[slug]
-	if r == nil {
-		r = &TicketRecord{Slug: slug, Attachments: map[string]string{}}
-		t.State.Tickets[slug] = r
+// AddBoard registers a board in the workspace, making it current if it is the
+// first one.
+func (t *Tree) AddBoard(bs *BoardState) {
+	if t.State.Boards == nil {
+		t.State.Boards = map[string]*BoardState{}
 	}
-	if r.Attachments == nil {
-		r.Attachments = map[string]string{}
+	if bs.Tickets == nil {
+		bs.Tickets = map[string]*TicketRecord{}
 	}
-	return r
+	t.State.Boards[bs.Slug] = bs
+	if t.State.CurrentBoard == "" {
+		t.State.CurrentBoard = bs.Slug
+	}
 }
 
-// slugByRemoteID builds a reverse index for pull (remote id -> local slug).
-func (t *Tree) slugByRemoteID() map[string]string {
-	m := map[string]string{}
-	for slug, r := range t.State.Tickets {
-		if r.RemoteID != "" {
-			m[r.RemoteID] = slug
+// BoardSlugs returns the workspace's board slugs in sorted order.
+func (t *Tree) BoardSlugs() []string {
+	out := make([]string, 0, len(t.State.Boards))
+	for slug := range t.State.Boards {
+		out = append(out, slug)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ResolveBoard selects a single board. A non-empty selector matches by slug,
+// code, name, or id. An empty selector returns the only board, or the current
+// board, and otherwise reports that a selection is required.
+func (t *Tree) ResolveBoard(sel string) (*BoardState, error) {
+	if sel != "" {
+		for _, bs := range t.State.Boards {
+			if bs.Slug == sel || bs.Code == sel || bs.Name == sel || bs.BoardID == sel {
+				return bs, nil
+			}
+		}
+		return nil, fmt.Errorf("no board %q in this workspace (see `mello board list`)", sel)
+	}
+	switch len(t.State.Boards) {
+	case 0:
+		return nil, errors.New("no boards in this workspace — run `mello sync clone -b <board>`")
+	case 1:
+		for _, bs := range t.State.Boards {
+			return bs, nil
 		}
 	}
-	return m
+	if bs := t.State.Boards[t.State.CurrentBoard]; bs != nil {
+		return bs, nil
+	}
+	return nil, errors.New("multiple boards in this workspace — specify -b <board>")
 }
 
-// boardDir returns .../.mello/boards/<board-slug>.
-func (t *Tree) boardDir() string {
-	return filepath.Join(t.Root, DirName, "boards", t.State.BoardSlug)
+// SelectBoards returns the boards a command should act on: the selected one, or
+// all boards when the selector is empty.
+func (t *Tree) SelectBoards(sel string) ([]*BoardState, error) {
+	if sel != "" {
+		bs, err := t.ResolveBoard(sel)
+		if err != nil {
+			return nil, err
+		}
+		return []*BoardState{bs}, nil
+	}
+	if len(t.State.Boards) == 0 {
+		return nil, errors.New("no boards in this workspace — run `mello sync clone -b <board>`")
+	}
+	out := make([]*BoardState, 0, len(t.State.Boards))
+	for _, slug := range t.BoardSlugs() {
+		out = append(out, t.State.Boards[slug])
+	}
+	return out, nil
 }
 
-func (t *Tree) ticketsRoot() string { return filepath.Join(t.boardDir(), "tickets") }
+// ---- board-relative paths ---------------------------------------------------
 
-// ticketDir returns the folder for a ticket slug.
-func (t *Tree) ticketDir(slug string) string {
-	return filepath.Join(t.ticketsRoot(), slug)
+func (t *Tree) boardDir(boardSlug string) string {
+	return filepath.Join(t.Root, DirName, "boards", boardSlug)
 }
 
-// TicketPath is the exported folder path for a ticket slug (used by `mello new`).
-func (t *Tree) TicketPath(slug string) string { return t.ticketDir(slug) }
+func (t *Tree) ticketsRoot(boardSlug string) string {
+	return filepath.Join(t.boardDir(boardSlug), "tickets")
+}
 
-// UniqueSlug returns an unused slug derived from base.
-func (t *Tree) UniqueSlug(base string) string { return t.uniqueSlug(base) }
+func (t *Tree) ticketDir(boardSlug, ticketSlug string) string {
+	return filepath.Join(t.ticketsRoot(boardSlug), ticketSlug)
+}
 
-// scanTicketDirs returns the slugs of every ticket folder present on disk.
-func (t *Tree) scanTicketDirs() []string {
-	entries, err := os.ReadDir(t.ticketsRoot())
+// TicketPath is the exported folder path for a ticket (used by `mello new`).
+func (t *Tree) TicketPath(boardSlug, ticketSlug string) string {
+	return t.ticketDir(boardSlug, ticketSlug)
+}
+
+func (t *Tree) scanTicketDirs(boardSlug string) []string {
+	entries, err := os.ReadDir(t.ticketsRoot(boardSlug))
 	if err != nil {
 		return nil
 	}
@@ -191,18 +254,49 @@ func (t *Tree) scanTicketDirs() []string {
 	return out
 }
 
-// uniqueSlug returns a slug not already used by another ticket folder/record.
-func (t *Tree) uniqueSlug(base string) string {
+// uniqueSlug returns a ticket slug not already used in the board (in state or on
+// disk).
+func (t *Tree) uniqueSlug(bs *BoardState, base string) string {
 	base = Slugify(base)
 	slug := base
 	for i := 2; ; i++ {
-		_, inState := t.State.Tickets[slug]
-		_, statErr := os.Stat(t.ticketDir(slug))
+		_, inState := bs.Tickets[slug]
+		_, statErr := os.Stat(t.ticketDir(bs.Slug, slug))
 		if !inState && statErr != nil {
 			return slug
 		}
 		slug = base + "-" + itoa(i)
 	}
+}
+
+// UniqueSlug is the exported form used by `mello new`.
+func (t *Tree) UniqueSlug(bs *BoardState, base string) string { return t.uniqueSlug(bs, base) }
+
+// ---- board-scoped ticket bookkeeping ---------------------------------------
+
+func (bs *BoardState) record(slug string) *TicketRecord {
+	if bs.Tickets == nil {
+		bs.Tickets = map[string]*TicketRecord{}
+	}
+	r := bs.Tickets[slug]
+	if r == nil {
+		r = &TicketRecord{Slug: slug, Attachments: map[string]string{}}
+		bs.Tickets[slug] = r
+	}
+	if r.Attachments == nil {
+		r.Attachments = map[string]string{}
+	}
+	return r
+}
+
+func (bs *BoardState) slugByRemoteID() map[string]string {
+	m := map[string]string{}
+	for slug, r := range bs.Tickets {
+		if r.RemoteID != "" {
+			m[r.RemoteID] = slug
+		}
+	}
+	return m
 }
 
 // Slugify makes a filesystem-safe, lowercase slug.

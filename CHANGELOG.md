@@ -8,6 +8,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `init` command to create an empty local `.mello` workspace, and support for
+  checking multiple boards out into one workspace. Commands default to the sole
+  board, accept `-b <board>` to scope to one, and span all boards for
+  status/pull/push.
 - Authentication with personal access tokens, stored per profile in
   `~/.config/mello/config.json` (`auth login`, `logout`, `status`).
 - Resource commands for workspaces, boards, columns, tickets, comments,

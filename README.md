@@ -69,14 +69,27 @@ make install            # installs to $GOBIN
 ```sh
 mello auth login                          # store a personal access token
 mello workspace use <workspace>           # select a default workspace
-mello board list                          # discover boards
-mello sync clone -b <board>               # mirror a board into ./.mello
+mello sync clone -b <board>               # create a workspace and check a board out
 
 # edit ticket files, write comments, add attachments, create new tickets …
 
 mello sync status                         # review pending changes
 mello sync push                           # apply them to the server
 ```
+
+A working copy can hold more than one board. Use `mello init` to create an empty
+workspace and check boards out into it:
+
+```sh
+mello init                                # create an empty .mello workspace here
+mello sync clone -b ROADMAP               # check out a board
+mello sync clone -b OPERATIONS            # check out another
+mello sync status                         # plan across all boards
+```
+
+Most commands act on the only board when there is one, so `-b` is rarely needed.
+With several boards, `-b <board>` scopes a command to one, and `mello sync
+status`/`pull`/`push` cover them all by default.
 
 ## Authentication
 
@@ -107,6 +120,7 @@ comment     list | add
 attachment  list | add | download
 member      list
 search      <query>
+init        (create a local .mello workspace)
 new         ticket
 sync        clone | status | pull | push | sync
 ```
@@ -125,13 +139,13 @@ A complete listing is in [docs/commands.md](docs/commands.md).
 
 ## Local working copy
 
-`mello sync clone` creates a `.mello` directory that mirrors a board. It is a
-self-contained working copy: commands run from anywhere inside it locate the
-`.mello` directory by searching parent directories.
+A `.mello` directory is a self-contained workspace that mirrors one or more
+boards. Commands run from anywhere inside it locate the `.mello` directory by
+searching parent directories. Create one with `mello init` or `mello sync clone`.
 
 ```
 .mello/
-  state.json                       # tracked board, sync cursor, and per-ticket baselines
+  state.json                       # workspace, boards, sync cursors, and per-ticket baselines
   journal.log                      # an audit record of each push
   boards/<board>/tickets/<ticket>/
       ticket.md                    # editable: front matter (fields) + description body

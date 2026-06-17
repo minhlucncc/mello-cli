@@ -78,21 +78,31 @@ Global flags accepted by every command:
 |---------|-------------|
 | `search <query> [-w <workspace>]` | Full-text search of tickets. |
 
+## init
+
+| Command | Description |
+|---------|-------------|
+| `init [<dir>] [-w <workspace>]` | Create an empty `.mello` workspace in `<dir>` (default `.`) bound to a workspace. Check boards out into it with `sync clone`. |
+
 ## new
 
 | Command | Description |
 |---------|-------------|
-| `new ticket --column <name> -t <title> [-d <desc>\|--body-file <f>]` | Scaffold a ticket in the local working copy; it is created on the server on the next push. |
+| `new ticket --column <name> -t <title> [-b <board>] [-d <desc>\|--body-file <f>]` | Scaffold a ticket in the working copy; it is created on the server on the next push. `-b` is required only when the workspace has more than one board. |
 
 ## sync
 
+A workspace may hold several boards. Commands act on the only board when there is
+one; `-b <board>` scopes to a single board, and `status`/`pull`/`push` cover all
+boards by default.
+
 | Command | Description |
 |---------|-------------|
-| `sync clone -b <board> [--dir <d>]` | Mirror a board into a local working copy. |
-| `sync status [--remote]` | Show the plan of pending changes. With `--remote`, also fetch the server to detect drift and conflicts. |
-| `sync pull` | Apply remote changes to the working copy. |
-| `sync push [--dry-run] [--force]` | Apply local changes to the server. |
-| `sync sync [--force]` | Pull, then push. |
+| `sync clone -b <board> [-w <ws>] [--dir <d>]` | Check a board out, creating the workspace if needed. |
+| `sync status [-b <board>] [--remote]` | Show the plan of pending changes. With `--remote`, also fetch the server to detect drift and conflicts. |
+| `sync pull [-b <board>]` | Apply remote changes to the working copy. |
+| `sync push [-b <board>] [--dry-run] [--force]` | Apply local changes to the server. |
+| `sync sync [-b <board>] [--force]` | Pull, then push. |
 
 See [working-copy.md](working-copy.md) for the synchronization model.
 

@@ -32,11 +32,12 @@ type API interface {
 // Logf is an optional progress sink.
 type Logf func(format string, a ...any)
 
-// Syncer drives clone/pull/push against a Tree.
+// Syncer drives clone/pull/push for a single board within a Tree.
 type Syncer struct {
-	API  API
-	Tree *Tree
-	Log  Logf
+	API   API
+	Tree  *Tree
+	Board *BoardState
+	Log   Logf
 
 	// capability flags discovered at runtime (optional endpoints).
 	noComments    bool
@@ -52,8 +53,15 @@ func (s *Syncer) logf(format string, a ...any) {
 	}
 }
 
+// ticketDir is the folder for a ticket slug on this Syncer's board.
+func (s *Syncer) ticketDir(slug string) string {
+	return s.Tree.ticketDir(s.Board.Slug, slug)
+}
+
+func (s *Syncer) record(slug string) *TicketRecord { return s.Board.record(slug) }
+
 func (s *Syncer) columnMaps(ctx context.Context) (idToName, nameToID map[string]string, err error) {
-	cols, err := s.API.ListColumns(ctx, s.Tree.State.BoardID)
+	cols, err := s.API.ListColumns(ctx, s.Board.BoardID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -68,7 +76,7 @@ func (s *Syncer) columnMaps(ctx context.Context) (idToName, nameToID map[string]
 
 // Clone performs the initial full pull using columns (with nested tickets).
 func (s *Syncer) Clone(ctx context.Context) (int, error) {
-	cols, err := s.API.ListColumns(ctx, s.Tree.State.BoardID)
+	cols, err := s.API.ListColumns(ctx, s.Board.BoardID)
 	if err != nil {
 		return 0, err
 	}
@@ -92,7 +100,7 @@ func (s *Syncer) Clone(ctx context.Context) (int, error) {
 		}
 	}
 	if maxUpdated != "" {
-		s.Tree.State.Cursor = maxUpdated
+		s.Board.Cursor = maxUpdated
 	}
 	s.Tree.State.Serial++
 	return count, s.Tree.Save()
@@ -105,14 +113,14 @@ func (s *Syncer) Pull(ctx context.Context) (updated, deleted int, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	tickets, err := s.API.ListTickets(ctx, s.Tree.State.WorkspaceID, s.Tree.State.Cursor)
+	tickets, err := s.API.ListTickets(ctx, s.Tree.State.WorkspaceID, s.Board.Cursor)
 	if err != nil {
 		return 0, 0, err
 	}
-	byRemote := s.Tree.slugByRemoteID()
+	byRemote := s.Board.slugByRemoteID()
 	var maxUpdated string
 	for _, t := range tickets {
-		if t.BoardID != "" && t.BoardID != s.Tree.State.BoardID {
+		if t.BoardID != "" && t.BoardID != s.Board.BoardID {
 			maxUpdated = maxTime(maxUpdated, t)
 			continue
 		}
@@ -134,7 +142,7 @@ func (s *Syncer) Pull(ctx context.Context) (updated, deleted int, err error) {
 		maxUpdated = maxTime(maxUpdated, t)
 	}
 	if maxUpdated != "" {
-		s.Tree.State.Cursor = maxUpdated
+		s.Board.Cursor = maxUpdated
 	}
 	s.Tree.State.Serial++
 	return updated, deleted, s.Tree.Save()
@@ -144,14 +152,14 @@ func (s *Syncer) Pull(ctx context.Context) (updated, deleted int, err error) {
 // the baseline hash, and pulls comments/attachments. allowPreserve protects
 // local edits during a pull (and flags conflicts when the remote also changed).
 func (s *Syncer) writeTicket(ctx context.Context, t mello.Ticket, columnName, slug string, allowPreserve bool) error {
-	dir := s.Tree.ticketDir(slug)
+	dir := s.ticketDir(slug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	mdPath := filepath.Join(dir, "ticket.md")
 	jsonPath := filepath.Join(dir, "ticket.json")
 	remoteHash := HashTicket(t, columnName)
-	rec := s.Tree.record(slug)
+	rec := s.record(slug)
 
 	preserve := false
 	if allowPreserve {
@@ -281,18 +289,18 @@ func (s *Syncer) pullAttachments(ctx context.Context, ticketDir, ticketID string
 }
 
 func (s *Syncer) removeTicket(slug string) bool {
-	if _, ok := s.Tree.State.Tickets[slug]; !ok {
+	if _, ok := s.Board.Tickets[slug]; !ok {
 		return false
 	}
-	_ = os.RemoveAll(s.Tree.ticketDir(slug))
-	delete(s.Tree.State.Tickets, slug)
+	_ = os.RemoveAll(s.ticketDir(slug))
+	delete(s.Board.Tickets, slug)
 	return true
 }
 
 // desiredSlug reuses the recorded slug for a known remote id, else derives a
 // stable, unique slug from the ticket code/id.
 func (s *Syncer) desiredSlug(t mello.Ticket) string {
-	for slug, r := range s.Tree.State.Tickets {
+	for slug, r := range s.Board.Tickets {
 		if r.RemoteID == t.ID && t.ID != "" {
 			return slug
 		}
@@ -301,7 +309,7 @@ func (s *Syncer) desiredSlug(t mello.Ticket) string {
 	if base == "" {
 		base = t.ID
 	}
-	return s.Tree.uniqueSlug(base)
+	return s.Tree.uniqueSlug(s.Board, base)
 }
 
 func maxTime(cur string, t mello.Ticket) string {

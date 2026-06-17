@@ -144,23 +144,26 @@ func newStub() *stubAPI {
 	}
 }
 
-func cloneInto(t *testing.T, s *stubAPI) *Tree {
+// cloneInto builds a one-board workspace and clones the stub into it.
+func cloneInto(t *testing.T, s *stubAPI) (*Tree, *BoardState) {
 	t.Helper()
 	root := t.TempDir()
-	tree, err := Init(root, &State{WorkspaceID: "ws1", BoardID: "b1", BoardSlug: "b1"})
+	tree, err := InitWorkspace(root, &State{WorkspaceID: "ws1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sy := &Syncer{API: s, Tree: tree}
+	bs := &BoardState{BoardID: "b1", Slug: "b1", Name: "Board One"}
+	tree.AddBoard(bs)
+	sy := &Syncer{API: s, Tree: tree, Board: bs}
 	if _, err := sy.Clone(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return tree
+	return tree, bs
 }
 
-func plan(t *testing.T, s *stubAPI, tree *Tree, remote bool) (*Syncer, Plan) {
+func plan(t *testing.T, s *stubAPI, tree *Tree, bs *BoardState, remote bool) (*Syncer, Plan) {
 	t.Helper()
-	sy := &Syncer{API: s, Tree: tree}
+	sy := &Syncer{API: s, Tree: tree, Board: bs}
 	p, err := sy.ComputePlan(context.Background(), remote)
 	if err != nil {
 		t.Fatal(err)
@@ -170,9 +173,9 @@ func plan(t *testing.T, s *stubAPI, tree *Tree, remote bool) (*Syncer, Plan) {
 
 func TestUpdateAndMove(t *testing.T) {
 	s := newStub()
-	tree := cloneInto(t, s)
+	tree, bs := cloneInto(t, s)
 
-	mdPath := filepath.Join(tree.ticketDir("t-1"), "ticket.md")
+	mdPath := filepath.Join(tree.ticketDir(bs.Slug, "t-1"), "ticket.md")
 	data, err := os.ReadFile(mdPath)
 	if err != nil {
 		t.Fatalf("ticket.md not written: %v", err)
@@ -181,7 +184,7 @@ func TestUpdateAndMove(t *testing.T) {
 	edited = strings.ReplaceAll(edited, "column: Todo", "column: Doing")
 	os.WriteFile(mdPath, []byte(edited), 0o644)
 
-	sy, p := plan(t, s, tree, false)
+	sy, p := plan(t, s, tree, bs, false)
 	if len(p.Changes) != 1 || p.Changes[0].Kind != KindUpdate {
 		t.Fatalf("plan = %+v", p.Changes)
 	}
@@ -197,8 +200,7 @@ func TestUpdateAndMove(t *testing.T) {
 	if s.tickets["t1"].Title != "New title" || s.tickets["t1"].ColumnID != "col-doing" {
 		t.Errorf("server state = %+v", s.tickets["t1"])
 	}
-	// Clean after push.
-	_, p2 := plan(t, s, tree, false)
+	_, p2 := plan(t, s, tree, bs, false)
 	if len(p2.Changes) != 0 {
 		t.Errorf("expected clean, got %+v", p2.Changes)
 	}
@@ -206,23 +208,22 @@ func TestUpdateAndMove(t *testing.T) {
 
 func TestCreateLocalTicket(t *testing.T) {
 	s := newStub()
-	tree := cloneInto(t, s)
+	tree, bs := cloneInto(t, s)
 
-	// Scaffold a brand-new local ticket (no state record, no remote id).
-	slug := tree.UniqueSlug("Ship the thing")
-	dir := tree.TicketPath(slug)
+	slug := tree.UniqueSlug(bs, "Ship the thing")
+	dir := tree.TicketPath(bs.Slug, slug)
 	os.MkdirAll(dir, 0o755)
 	md := RenderTicket(mello.Ticket{Title: "Ship the thing", Description: "do it", Status: "open"}, "Doing")
 	os.WriteFile(filepath.Join(dir, "ticket.md"), md, 0o644)
 
-	sy, p := plan(t, s, tree, false)
-	var create *Change
-	for i := range p.Changes {
-		if p.Changes[i].Kind == KindCreate {
-			create = &p.Changes[i]
+	sy, p := plan(t, s, tree, bs, false)
+	found := false
+	for _, ch := range p.Changes {
+		if ch.Kind == KindCreate {
+			found = true
 		}
 	}
-	if create == nil {
+	if !found {
 		t.Fatalf("no create change in %+v", p.Changes)
 	}
 	if err := sy.Apply(context.Background(), p, false, false); err != nil {
@@ -231,12 +232,11 @@ func TestCreateLocalTicket(t *testing.T) {
 	if s.gotCreates != 1 {
 		t.Fatalf("CreateTicket calls = %d", s.gotCreates)
 	}
-	rec := tree.State.Tickets[slug]
+	rec := bs.Tickets[slug]
 	if rec == nil || rec.RemoteID == "" {
 		t.Fatalf("new ticket not tracked with a remote id: %+v", rec)
 	}
-	// Clean after create.
-	_, p2 := plan(t, s, tree, false)
+	_, p2 := plan(t, s, tree, bs, false)
 	if len(p2.Changes) != 0 {
 		t.Errorf("expected clean after create, got %+v", p2.Changes)
 	}
@@ -244,11 +244,10 @@ func TestCreateLocalTicket(t *testing.T) {
 
 func TestDeleteLocalTicket(t *testing.T) {
 	s := newStub()
-	tree := cloneInto(t, s)
-	// Remove the ticket folder → should plan a remote delete.
-	os.RemoveAll(tree.ticketDir("t-1"))
+	tree, bs := cloneInto(t, s)
+	os.RemoveAll(tree.ticketDir(bs.Slug, "t-1"))
 
-	sy, p := plan(t, s, tree, false)
+	sy, p := plan(t, s, tree, bs, false)
 	if len(p.Changes) != 1 || p.Changes[0].Kind != KindDelete {
 		t.Fatalf("plan = %+v", p.Changes)
 	}
@@ -261,36 +260,32 @@ func TestDeleteLocalTicket(t *testing.T) {
 	if _, ok := s.tickets["t1"]; ok {
 		t.Errorf("ticket not deleted on server")
 	}
-	if _, ok := tree.State.Tickets["t-1"]; ok {
+	if _, ok := bs.Tickets["t-1"]; ok {
 		t.Errorf("record not removed")
 	}
 }
 
 func TestConflictDetectionAndForce(t *testing.T) {
 	s := newStub()
-	tree := cloneInto(t, s)
+	tree, bs := cloneInto(t, s)
 
-	// Local edit.
-	mdPath := filepath.Join(tree.ticketDir("t-1"), "ticket.md")
+	mdPath := filepath.Join(tree.ticketDir(bs.Slug, "t-1"), "ticket.md")
 	data, _ := os.ReadFile(mdPath)
 	os.WriteFile(mdPath, []byte(strings.ReplaceAll(string(data), "Old title", "Local title")), 0o644)
-	// Remote also changed (different from baseline and from local).
 	s.tickets["t1"].Title = "Remote title"
 	s.tickets["t1"].UpdatedAt = tptr("2026-02-02T00:00:00Z")
 
-	sy, p := plan(t, s, tree, true)
+	sy, p := plan(t, s, tree, bs, true)
 	if len(p.Changes) != 1 || p.Changes[0].Kind != KindConflict {
 		t.Fatalf("expected conflict, got %+v", p.Changes)
 	}
-	// Without force: skipped.
 	if err := sy.Apply(context.Background(), p, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if s.gotUpdates != 0 {
 		t.Errorf("conflict applied without force: updates=%d", s.gotUpdates)
 	}
-	// With force: local wins.
-	sy2, p2 := plan(t, s, tree, true)
+	sy2, p2 := plan(t, s, tree, bs, true)
 	if err := sy2.Apply(context.Background(), p2, false, true); err != nil {
 		t.Fatal(err)
 	}
@@ -301,14 +296,14 @@ func TestConflictDetectionAndForce(t *testing.T) {
 
 func TestPushNewComment(t *testing.T) {
 	s := newStub()
-	tree := cloneInto(t, s)
+	tree, bs := cloneInto(t, s)
 
-	commentsDir := filepath.Join(tree.ticketDir("t-1"), "comments")
+	commentsDir := filepath.Join(tree.ticketDir(bs.Slug, "t-1"), "comments")
 	os.MkdirAll(commentsDir, 0o755)
 	body := "---\nauthor: me\n---\n\nLooks good, shipping.\n"
 	os.WriteFile(filepath.Join(commentsDir, "draft.md"), []byte(body), 0o644)
 
-	sy, p := plan(t, s, tree, false)
+	sy, p := plan(t, s, tree, bs, false)
 	if len(p.Changes) != 1 || len(p.Changes[0].NewComments) != 1 {
 		t.Fatalf("expected 1 new comment, got %+v", p.Changes)
 	}
@@ -318,8 +313,7 @@ func TestPushNewComment(t *testing.T) {
 	if len(s.gotComment) != 1 || s.gotComment[0] != "Looks good, shipping." {
 		t.Errorf("AddComment payload = %v", s.gotComment)
 	}
-	// Draft replaced; second push clean.
-	_, p2 := plan(t, s, tree, false)
+	_, p2 := plan(t, s, tree, bs, false)
 	if len(p2.Changes) != 0 {
 		t.Errorf("expected clean after comment push, got %+v", p2.Changes)
 	}
@@ -327,12 +321,12 @@ func TestPushNewComment(t *testing.T) {
 
 func TestDryRunMutatesNothing(t *testing.T) {
 	s := newStub()
-	tree := cloneInto(t, s)
-	mdPath := filepath.Join(tree.ticketDir("t-1"), "ticket.md")
+	tree, bs := cloneInto(t, s)
+	mdPath := filepath.Join(tree.ticketDir(bs.Slug, "t-1"), "ticket.md")
 	data, _ := os.ReadFile(mdPath)
 	os.WriteFile(mdPath, []byte(strings.ReplaceAll(string(data), "Old title", "X")), 0o644)
 
-	sy, p := plan(t, s, tree, false)
+	sy, p := plan(t, s, tree, bs, false)
 	if err := sy.Apply(context.Background(), p, true, false); err != nil {
 		t.Fatal(err)
 	}
@@ -341,13 +335,45 @@ func TestDryRunMutatesNothing(t *testing.T) {
 	}
 }
 
+func TestMultipleBoardsIsolated(t *testing.T) {
+	s := newStub()
+	tree, _ := cloneInto(t, s)
+	// Attach a second board with its own ticket namespace.
+	o1 := &mello.Ticket{ID: "u1", TicketCode: "OPS-1", BoardID: "b2", ColumnID: "col-todo",
+		Title: "Ops task", Status: "open", UpdatedAt: tptr("2026-01-03T00:00:00Z")}
+	api2 := &stubAPI{
+		tickets:  map[string]*mello.Ticket{"u1": o1},
+		comments: map[string][]mello.Comment{},
+		cols:     []mello.Column{{ID: "col-todo", Name: "Todo", Tickets: []mello.Ticket{*o1}}},
+	}
+	bs2 := &BoardState{BoardID: "b2", Slug: "ops", Name: "Ops"}
+	tree.AddBoard(bs2)
+	if _, err := (&Syncer{API: api2, Tree: tree, Board: bs2}).Clone(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.State.Boards) != 2 {
+		t.Fatalf("want 2 boards, got %d", len(tree.State.Boards))
+	}
+	if _, ok := tree.State.Boards["b1"].Tickets["t-1"]; !ok {
+		t.Errorf("board b1 missing its ticket")
+	}
+	if _, ok := tree.State.Boards["ops"].Tickets["ops-1"]; !ok {
+		t.Errorf("board ops missing its ticket: %+v", tree.State.Boards["ops"].Tickets)
+	}
+	if _, err := os.Stat(tree.ticketDir("ops", "ops-1")); err != nil {
+		t.Errorf("ops ticket dir not created: %v", err)
+	}
+}
+
 func TestCloneDegradesWhenOptionalEndpointsMissing(t *testing.T) {
 	s := newStub()
 	s.noComments = true
 	s.noAttach = true
 	root := t.TempDir()
-	tr, _ := Init(root, &State{WorkspaceID: "ws1", BoardID: "b1", BoardSlug: "b1"})
-	sy := &Syncer{API: s, Tree: tr}
+	tree, _ := InitWorkspace(root, &State{WorkspaceID: "ws1"})
+	bs := &BoardState{BoardID: "b1", Slug: "b1", Name: "Board One"}
+	tree.AddBoard(bs)
+	sy := &Syncer{API: s, Tree: tree, Board: bs}
 	n, err := sy.Clone(context.Background())
 	if err != nil {
 		t.Fatalf("clone should not fail on missing optional endpoints: %v", err)

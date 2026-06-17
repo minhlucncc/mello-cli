@@ -13,16 +13,18 @@ import (
 func newCmd() *Command {
 	return &Command{
 		Name:  "new",
-		Short: "Create local objects in the working copy (push to create remotely).",
+		Short: "Create local objects in the workspace (push to create remotely).",
 		Subs: []*Command{
-			{Name: "ticket", Short: "Scaffold a new local ticket folder.", Run: newTicket},
+			{Name: "ticket", Short: "Scaffold a new local ticket.", Run: newTicket},
 		},
 	}
 }
 
 func newTicket(args []string) error {
 	fs, c := newFlags("new ticket")
-	dir := fs.String("dir", ".", "working copy directory")
+	dir := fs.String("dir", ".", "workspace directory")
+	board := fs.String("board", "", "target board (id, code, name, or slug)")
+	fs.StringVar(board, "b", "", "target board (shorthand)")
 	column := fs.String("column", "", "target column NAME (e.g. \"Todo\")")
 	fs.StringVar(column, "c", "", "target column name (shorthand)")
 	title := fs.String("title", "", "ticket title")
@@ -34,7 +36,7 @@ func newTicket(args []string) error {
 		return err
 	}
 	if *title == "" || *column == "" {
-		return fmt.Errorf("usage: mello new ticket --column <name> -t <title> [-d desc|--body-file f]")
+		return fmt.Errorf("usage: mello new ticket --column <name> -t <title> [-b board] [-d desc|--body-file f]")
 	}
 	body := *desc
 	if body == "" && *descFile != "" {
@@ -49,17 +51,20 @@ func newTicket(args []string) error {
 	if err != nil {
 		return err
 	}
-	slug := tree.UniqueSlug(*title)
-	tdir := tree.TicketPath(slug)
+	bs, err := tree.ResolveBoard(*board)
+	if err != nil {
+		return err
+	}
+	slug := tree.UniqueSlug(bs, *title)
+	tdir := tree.TicketPath(bs.Slug, slug)
 	if err := os.MkdirAll(tdir, 0o755); err != nil {
 		return err
 	}
-	// A new ticket has no id/code yet; push will create it remotely.
 	md := syncpkg.RenderTicket(mello.Ticket{Title: *title, Description: body, Status: "open"}, *column)
 	if err := os.WriteFile(filepath.Join(tdir, "ticket.md"), md, 0o644); err != nil {
 		return err
 	}
-	ui.Successf("New local ticket %s — edit %s then `mello sync push`",
-		ui.Bold(slug), filepath.Join(tdir, "ticket.md"))
+	ui.Successf("New local ticket %s on board %s — edit %s then `mello sync push`",
+		ui.Bold(slug), ui.Bold(bs.Name), filepath.Join(tdir, "ticket.md"))
 	return nil
 }
