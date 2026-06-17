@@ -10,7 +10,7 @@ import (
 func useCmd() *Command {
 	return &Command{
 		Name:  "use",
-		Short: "Attach a board to the workspace and make it the working board.",
+		Short: "Select the working board (creates the workspace if needed).",
 		Run:   useRun,
 	}
 }
@@ -29,9 +29,18 @@ func useRun(args []string) error {
 	}
 	sel := fs.Arg(0)
 
+	// Auto-create the workspace if there isn't one here — selecting a board is a
+	// single step (no separate `mello init` needed).
 	tree, err := syncpkg.Open(*dir)
 	if err != nil {
-		return fmt.Errorf("not a mello workspace — run `mello init` here first")
+		r, _ := c.resolveConfig()
+		tree, err = syncpkg.InitWorkspace(*dir, &syncpkg.State{
+			Profile: r.Profile, BaseURL: r.BaseURL, WorkspaceID: r.WorkspaceID,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Println(ui.Dim("initialized a mello workspace here (.mello)"))
 	}
 
 	// Already checked out: just switch the working board (no network needed).

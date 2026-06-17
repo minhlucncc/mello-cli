@@ -11,10 +11,10 @@ import (
 func workspaceCmd() *Command {
 	return &Command{
 		Name:  "workspace",
-		Short: "List workspaces and set the default one.",
+		Short: "List workspaces (board selection is via `mello use`/`board use`).",
 		Subs: []*Command{
 			{Name: "list", Short: "List accessible workspaces.", Run: workspaceList},
-			{Name: "use", Short: "Set the default workspace for this profile.", Run: workspaceUse},
+			{Name: "use", Short: "Set a default workspace (optional; `mello use <board>` binds one).", Run: workspaceUse},
 		},
 	}
 }
