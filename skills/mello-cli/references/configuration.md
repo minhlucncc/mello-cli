@@ -1,21 +1,43 @@
 # Configuration, storage & exit codes
 
-## Authentication
+## Authentication (two backends)
 
-A Mello personal access token (`mello_pat_…`) is the only credential. Scopes:
-`read` (browse) and `write` (create/update). A `forbidden` error means the token
-lacks the needed scope.
+The CLI auto-detects the backend from the token type:
+
+| Token | Backend (base URL) | Notes |
+|-------|--------------------|-------|
+| `mello_pat_…` (personal access token) | public `https://mello.mezon.vn/api/v1` | official; scopes `read`/`write`; currently limited data |
+| session **JWT** (`eyJ…`) or **refresh token** | internal `https://mello.mezon.vn/api` | full data — members, attachments, comments, activity/history |
 
 ```sh
-mello auth login                       # hidden prompt
-mello auth login --token mello_pat_xxx # non-interactive
-printf '%s' "$TOKEN" | mello auth login --with-token
-mello auth status                      # identity, profile, base URL, workspace
+# Public API key
+mello auth login --token mello_pat_xxx
+printf '%s' "$KEY" | mello auth login --with-token   # CI / piped
+
+# Session — refresh token (auto-renews; recommended).
+# Browser: DevTools → Application → Cookies → mello.mezon.vn → refresh_token
+mello auth login --refresh-token <refresh_token>
+
+# Session — access token (~1h, no auto-renew).
+# Browser: DevTools → Application → Local Storage → mello.mezon.vn → mello.access_token
+mello auth login --token <jwt>
+
+mello auth status      # identity, profile, base URL, workspace
 mello auth logout
 ```
 
-The user's id is captured at login so `me` / `--mine` resolve without an extra
-request.
+### Refresh-token auto-renewal
+
+`--refresh-token` calls `POST /api/auth/refresh`, stores the resulting access
+token, and renews it automatically when it expires. **Refresh tokens are
+single-use and rotate** — the server returns a new one each time, which the CLI
+persists. Implication: don't share one session between the CLI and the browser at
+the same time; whichever refreshes second is logged out. A `forbidden` error
+means insufficient scope; an `unauthorized`/expired refresh error means grab a
+fresh `refresh_token` from the browser cookie.
+
+The user's id is captured at login (from the JWT `sub` or `/me`) so `me` /
+`--mine` resolve without an extra request.
 
 ## Profiles & config file
 
@@ -27,8 +49,9 @@ profile:
   "current": "default",
   "profiles": {
     "default": {
-      "base_url": "https://mello.mezon.vn/api/v1",
-      "token": "mello_pat_…",
+      "base_url": "https://mello.mezon.vn/api",
+      "token": "<access token>",
+      "refresh_token": "<rotated each renewal>",
       "workspace_id": "…",
       "user_id": "…"
     }

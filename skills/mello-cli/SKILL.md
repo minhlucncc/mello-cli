@@ -28,25 +28,40 @@ mello --help         # lists all commands
 If `mello` is not found, it can be built from this repo (`make build`, Go 1.22+)
 or installed via `./install.sh`. See `references/configuration.md`.
 
-## First: authenticate
+## First: authenticate (two backends)
 
-A Mello **personal access token** (`mello_pat_…`) is the only credential needed;
-everything the CLI can do is authorized by that token's scopes (`read` /
-`write`).
+The CLI talks to either of two backends, **auto-detected from the token**:
+
+| Token | Backend | Data |
+|-------|---------|------|
+| **personal access token** `mello_pat_…` | public `/api/v1` | official, but currently limited |
+| **session JWT / refresh token** (from the web app) | internal `/api` | **full** — members, **attachments**, comments, activity/history |
+
+For complete data (attachments, members, history) use the **session** auth.
 
 ```sh
-mello auth login                       # prompts for the token (hidden input)
-mello auth login --token mello_pat_xxx # non-interactive
-printf '%s' "$TOKEN" | mello auth login --with-token   # CI / piped
+# Public API key
+mello auth login --token mello_pat_xxx
+
+# Session: refresh token (best — auto-renews, ~30 days). From the browser:
+#   DevTools → Application → Cookies → mello.mezon.vn → refresh_token
+mello auth login --refresh-token <refresh_token>
+
+# Session: access token (quick, ~1h, no auto-renew). From the browser:
+#   DevTools → Application → Local Storage → mello.mezon.vn → mello.access_token
+mello auth login --token <jwt>
+
 mello auth status                      # who am I? which workspace/base URL?
 ```
 
-- A token with access to a single workspace auto-selects it; with several, the
-  CLI prompts (interactive) or you pass `-w <id>`.
-- It can also run with no `auth login` by setting `MELLO_TOKEN` (and
-  `MELLO_WORKSPACE` if needed) — handy for scripts/CI.
-- **Always check `mello auth status` first** when unsure; "not logged in" means
-  authenticate before other commands.
+- With `--refresh-token`, the CLI exchanges it for an access token and
+  **auto-renews** on every command (refresh tokens are single-use and rotate; the
+  CLI persists the rotated one). Log in once, stay logged in.
+- A token with one workspace auto-selects it; with several, the CLI prompts
+  (interactive) or you pass `-w <id>`.
+- Headless/CI: set `MELLO_TOKEN` (+ `MELLO_WORKSPACE`, and `MELLO_BASE_URL` if
+  using the internal API) — no `auth login` needed.
+- **Always check `mello auth status` first** when unsure.
 
 ## Mental model (read this before driving the CLI)
 
@@ -77,11 +92,16 @@ mello pull PROJ-12                # pull a ticket into the working set to edit i
 mello new ticket -t "Write spec"  # or create one locally
 
 # edit .mello/boards/<board>/tickets/<ticket>/ticket.md, or use `mello ticket edit`
+# drop files into that ticket's comments/ and attachments/ folders
 mello status                     # review pending local changes
-mello push                       # apply them to the server
+mello push -m "Updated per review"   # apply to the server; -m posts a note comment
 mello pull                       # later: refresh the working set
 mello untrack PROJ-12             # done with it → drop from the working set (kept on server)
 ```
+
+On `push`: edited fields → `PATCH`; column change → move; new files in
+`comments/` → posted; new files in `attachments/` → **uploaded**; `-m/--comment`
+posts an extra comment on each changed ticket announcing the push.
 
 You do not have to use the local working set at all — many tasks are one-shot
 live commands (`ticket create`, `ticket edit`, `ticket move`, `comment add`,
@@ -112,11 +132,15 @@ mello member list
   **multiple members (assignees)**; filters match membership.
 - **Flags work in any position** — `mello ticket move PROJ-1 --column Done` is
   fine (flags after the id).
-- **Optional endpoints degrade gracefully.** If an instance lacks attachments,
-  history, or ticket-edit endpoints, the command prints a clear "not supported"
-  message and exits non-zero — don't retry blindly; report it.
-- **Writes need a `write`-scoped token.** A `forbidden` error means insufficient
-  scope.
+- **Backend matters for completeness.** The internal `/api` (session auth) has
+  members, attachments, comments, and history; the public `/api/v1` (API key) is
+  more limited. If attachments/history look empty, you're probably on the public
+  API — re-auth with a session token (see `references/usecases/setup-and-auth.md`).
+- **Optional endpoints degrade gracefully.** When an endpoint isn't supported the
+  command prints a clear "not supported" message and exits non-zero — don't retry
+  blindly; report it.
+- **Writes need a `write`-scoped token / a valid session.** A `forbidden` error
+  means insufficient scope; `unauthorized` means re-authenticate.
 - **Exit codes:** `0` success · `1` runtime error (message on stderr) · `2`
   invalid usage.
 - **Discover** with `mello <command> help` (e.g. `mello ticket help`).

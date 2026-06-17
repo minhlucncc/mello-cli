@@ -25,9 +25,14 @@ Notes that matter when driving the CLI:
 
 | Command | Description |
 |---------|-------------|
-| `auth login [--token <pat>] [--with-token]` | Store a `mello_pat_…` token. No `--token` ⇒ hidden prompt; `--with-token` ⇒ read from stdin. Auto-selects the workspace when the token has exactly one. |
+| `auth login [--token <tok>]` | Store a token. `mello_pat_…` → public `/api/v1`; a session JWT → internal `/api`. No `--token` ⇒ hidden prompt. |
+| `auth login --with-token` | Read the token from stdin (CI). |
+| `auth login --refresh-token <tok>` | Exchange a session refresh token for an access token and **auto-renew** it on every command (rotated token persisted). |
 | `auth logout` | Remove the active profile's token. |
 | `auth status` | Show identity, profile, base URL, and workspace. |
+
+Backend is auto-detected from the token/base URL. Override with `--base-url`.
+See `configuration.md` for the two backends and refresh-token details.
 
 ## workspace
 
@@ -103,7 +108,7 @@ the instance doesn't support them.
 | `clone <board> [-w <ws>] [--dir <d>]` | Like `use` but also mirrors **all** of the board's tickets locally. Board may be positional or `-b`. |
 | `pull [<ticket>] [-b <board>] [--all]` | No arg ⇒ refresh the working set. `<ticket>` ⇒ pull one ticket into the working set. `--all` ⇒ mirror the whole board. |
 | `status [-b <board>] [--all] [--remote] [--json]` | Show the plan of pending local changes: `+` create, `~` update/move/comment/attach. `--remote` also checks the server for `↓` drift / `!` conflicts. Defaults to the working board; `--all` spans every board. |
-| `push [-b <board>] [--all] [--dry-run] [--force]` | Apply local changes to the server. `--dry-run` previews; `--force` pushes conflicts (local wins). |
+| `push [-b <board>] [--all] [--dry-run] [--force] [-m/--comment <msg>]` | Apply local changes to the server: field edits → `PATCH`; column → move; new files in `comments/` → posted; new files in `attachments/` → uploaded. `--dry-run` previews; `--force` pushes conflicts; `-m` posts a comment on each changed ticket announcing the push. |
 | `new ticket -t <title> --column <name> [-b <board>] [-d <desc>\|--body-file <f>]` | Scaffold a local ticket in the working set; created on the server on the next `push`. |
 | `untrack <ticket>... [-b <board>] [--all]` | Drop tickets from the working set locally. **Does not delete on the server** (use `ticket delete` for that). |
 | `sync clone\|status\|pull\|push\|sync` | The same verbs grouped under `sync`; `sync sync [--force]` does pull-then-push (reconcile). |
