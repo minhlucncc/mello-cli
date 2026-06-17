@@ -239,6 +239,26 @@ func ticketView(args []string) error {
 		}
 	}
 
+	// Attachments — prefer those embedded in the ticket; fall back to the
+	// endpoint. Always shown ("(none)" when there are none).
+	atts := t.AttachmentList()
+	if len(atts) == 0 {
+		if endpointAtts, aerr := cl.ListAttachments(cx, id); aerr == nil {
+			atts = endpointAtts
+		}
+	}
+	section(fmt.Sprintf("Attachments (%d)", len(atts)))
+	if len(atts) == 0 {
+		noneLine()
+	}
+	for _, a := range atts {
+		size := ""
+		if a.Size > 0 {
+			size = ui.Dim(fmt.Sprintf("  (%d bytes)", a.Size))
+		}
+		fmt.Printf("  %s%s\n", a.FileName(), size)
+	}
+
 	// Comments (last N) — prefer those embedded in the ticket (internal API),
 	// else the comments endpoint. Shown even when empty.
 	if !*noComments {
@@ -269,26 +289,6 @@ func ticketView(args []string) error {
 				fmt.Printf("    %s\n", line)
 			}
 		}
-	}
-
-	// Attachments — prefer those embedded in the ticket; fall back to the
-	// endpoint. Always shown ("(none)" when there are none).
-	atts := t.AttachmentList()
-	if len(atts) == 0 {
-		if endpointAtts, aerr := cl.ListAttachments(cx, id); aerr == nil {
-			atts = endpointAtts
-		}
-	}
-	section(fmt.Sprintf("Attachments (%d)", len(atts)))
-	if len(atts) == 0 {
-		noneLine()
-	}
-	for _, a := range atts {
-		size := ""
-		if a.Size > 0 {
-			size = ui.Dim(fmt.Sprintf("  (%d bytes)", a.Size))
-		}
-		fmt.Printf("  %s%s\n", a.FileName(), size)
 	}
 
 	// History (last N) — prefer embedded activities (internal API), else the
