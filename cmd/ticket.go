@@ -490,14 +490,16 @@ func ticketEdit(args []string) error {
 
 func ticketMove(args []string) error {
 	fs, c := newFlags("ticket move")
-	column := fs.String("column", "", "destination column id")
-	fs.StringVar(column, "c", "", "destination column id (shorthand)")
+	column := fs.String("column", "", "destination column (name or id)")
+	fs.StringVar(column, "c", "", "destination column (shorthand)")
+	board := fs.String("board", "", "board (default the working board)")
+	fs.StringVar(board, "b", "", "board (shorthand)")
 	position := fs.Int("position", 0, "position within the column")
 	if err := parse(fs, c, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 || *column == "" {
-		return fmt.Errorf("usage: mello ticket move <id> --column <col> [--position N]")
+		return fmt.Errorf("usage: mello ticket move <ticket> --column \"<name>\" [--position N]")
 	}
 	cl, _, err := c.client()
 	if err != nil {
@@ -505,14 +507,35 @@ func ticketMove(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	t, err := cl.MoveTicket(cx, fs.Arg(0), *column, *position)
+
+	// Resolve the destination column by name (or id) on the board.
+	boardID, _, err := resolveBoardID(cx, cl, *board)
+	if err != nil {
+		return err
+	}
+	cols, err := cachedColumns(cx, cl, boardID)
+	if err != nil {
+		return err
+	}
+	colID := ""
+	for _, cc := range cols {
+		if cc.ID == *column || strings.EqualFold(cc.Name, *column) {
+			colID = cc.ID
+			break
+		}
+	}
+	if colID == "" {
+		return fmt.Errorf("no column %q on this board (see `mello column list`)", *column)
+	}
+
+	t, err := cl.MoveTicket(cx, resolveTicketID(cx, cl, fs.Arg(0)), colID, *position)
 	if err != nil {
 		return err
 	}
 	if c.json {
 		return ui.JSON(t)
 	}
-	ui.Successf("Moved ticket %s", ui.Bold(ticketRef(t)))
+	ui.Successf("Moved %s → %s", ui.Bold(ticketRef(t)), *column)
 	return nil
 }
 
