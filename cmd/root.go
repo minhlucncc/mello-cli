@@ -57,6 +57,7 @@ func Root() *Command {
 			{Name: "move", Short: "Move a ticket to a column (e.g. mello move PROJ-2 In Progress).", Run: ticketMove},
 			untrackCmd(),
 			syncCmd(),
+			stashCmd(),
 			newCmd(),
 			cacheCmd(),
 			versionCmd(),

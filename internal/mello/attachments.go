@@ -85,6 +85,20 @@ func (c *Client) UploadAttachment(ctx context.Context, ticketID, filePath string
 	return out, nil
 }
 
+// DeleteAttachment removes an attachment from a ticket. The internal API uses
+// DELETE /attachments/{id}; the public API DELETE /tickets/{ticket}/attachments/{id}.
+// Optional endpoint (degrades gracefully with 404).
+func (c *Client) DeleteAttachment(ctx context.Context, ticketID, attachmentID string) error {
+	var path string
+	if c.internal {
+		path = fmt.Sprintf("/attachments/%s", url.PathEscape(attachmentID))
+	} else {
+		path = fmt.Sprintf("/tickets/%s/attachments/%s",
+			url.PathEscape(ticketID), url.PathEscape(attachmentID))
+	}
+	return c.do(ctx, http.MethodDelete, path, nil, nil)
+}
+
 // DownloadAttachment streams an attachment's bytes to w. If att.URL is an
 // absolute URL it is fetched directly; otherwise the canonical endpoint
 // (GET /tickets/{ticket}/attachments/{id}) is used. Optional endpoint.

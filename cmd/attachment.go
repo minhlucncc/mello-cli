@@ -17,6 +17,7 @@ func attachmentCmd() *Command {
 		Subs: []*Command{
 			{Name: "list", Short: "List a ticket's attachments.", Run: attachmentList},
 			{Name: "add", Short: "Upload one or more files to a ticket.", Run: attachmentAdd},
+			{Name: "rm", Short: "Delete attachments by id, or all with --name <file>.", Run: attachmentRemove},
 			{Name: "download", Short: "Download a ticket's attachments.", Run: attachmentDownload},
 		},
 	}
@@ -100,6 +101,56 @@ func attachmentAdd(args []string) error {
 			return fmt.Errorf("upload %s: %w", f, err)
 		}
 		ui.Successf("Uploaded %s%s", filepath.Base(f), idSuffix(a.ID))
+	}
+	return nil
+}
+
+func attachmentRemove(args []string) error {
+	fs, c := newFlags("attachment rm")
+	name := fs.String("name", "", "delete every attachment with this filename")
+	if err := parse(fs, c, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 || (*name == "" && fs.NArg() < 2) {
+		return fmt.Errorf("usage: mello attachment rm <ticket> <attachment-id>... | mello attachment rm <ticket> --name <file>")
+	}
+	cl, _, err := c.client()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	ticketID := resolveTicketID(cx, cl, fs.Arg(0))
+
+	// Resolve the attachment ids to delete: explicit ids, or every id matching --name.
+	var targets []mello.Attachment
+	if *name != "" {
+		atts, err := ticketAttachments(cx, cl, fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		for _, a := range atts {
+			if a.FileName() == *name {
+				targets = append(targets, a)
+			}
+		}
+		if len(targets) == 0 {
+			return fmt.Errorf("no attachment named %q on %s", *name, fs.Arg(0))
+		}
+	} else {
+		for _, id := range fs.Args()[1:] {
+			targets = append(targets, mello.Attachment{ID: id})
+		}
+	}
+
+	for _, a := range targets {
+		if err := cl.DeleteAttachment(cx, ticketID, a.ID); err != nil {
+			if mello.IsNotFound(err) {
+				return fmt.Errorf(attachUnsupported)
+			}
+			return fmt.Errorf("delete %s: %w", firstNonEmpty(a.FileName(), a.ID), err)
+		}
+		ui.Successf("Deleted %s%s", firstNonEmpty(a.Filename, a.ID), idSuffix(a.ID))
 	}
 	return nil
 }

@@ -56,6 +56,7 @@ type TicketRecord struct {
 	RemoteID      string            `json:"remote_id,omitempty"`
 	Code          string            `json:"code,omitempty"`
 	ColumnID      string            `json:"column_id,omitempty"`
+	ColumnName    string            `json:"column_name,omitempty"`
 	BaselineHash  string            `json:"baseline_hash,omitempty"`
 	RemoteUpdated string            `json:"remote_updated_at,omitempty"`
 	CommentIDs    []string          `json:"comment_ids,omitempty"`

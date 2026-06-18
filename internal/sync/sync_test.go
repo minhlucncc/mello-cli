@@ -19,15 +19,19 @@ type stubAPI struct {
 	cols       []mello.Column
 	tickets    map[string]*mello.Ticket
 	comments   map[string][]mello.Comment
+	attach     map[string][]mello.Attachment
 	noComments bool
 	noAttach   bool
 	clock      int
+	attachSeq  int
 
-	gotUpdates int
-	gotMoves   int
-	gotCreates int
-	gotDeletes int
-	gotComment []string
+	gotUpdates       int
+	gotMoves         int
+	gotCreates       int
+	gotDeletes       int
+	gotComment       []string
+	gotUploads       int
+	gotAttachDeletes int
 }
 
 func tptr(s string) *time.Time {
@@ -90,10 +94,31 @@ func (s *stubAPI) ListAttachments(ctx context.Context, id string) ([]mello.Attac
 	if s.noAttach {
 		return nil, &mello.APIError{Status: http.StatusNotFound, Path: "/tickets/x/attachments"}
 	}
-	return nil, nil
+	return s.attach[id], nil
 }
 func (s *stubAPI) UploadAttachment(ctx context.Context, id, path string) (mello.Attachment, error) {
-	return mello.Attachment{ID: "a1", Filename: filepath.Base(path)}, nil
+	if s.noAttach {
+		return mello.Attachment{}, &mello.APIError{Status: http.StatusNotFound, Path: "/tickets/x/attachments"}
+	}
+	s.attachSeq++
+	a := mello.Attachment{ID: fmt.Sprintf("a%d", s.attachSeq), Filename: filepath.Base(path)}
+	if s.attach == nil {
+		s.attach = map[string][]mello.Attachment{}
+	}
+	s.attach[id] = append(s.attach[id], a)
+	s.gotUploads++
+	return a, nil
+}
+func (s *stubAPI) DeleteAttachment(ctx context.Context, ticketID, attachmentID string) error {
+	list := s.attach[ticketID]
+	for i, a := range list {
+		if a.ID == attachmentID {
+			s.attach[ticketID] = append(list[:i:i], list[i+1:]...)
+			s.gotAttachDeletes++
+			return nil
+		}
+	}
+	return &mello.APIError{Status: http.StatusNotFound}
 }
 func (s *stubAPI) DownloadAttachment(ctx context.Context, id string, a mello.Attachment, w io.Writer) error {
 	_, err := w.Write([]byte("data"))
@@ -318,8 +343,8 @@ func TestConflictDetectionAndForce(t *testing.T) {
 	if len(p.Changes) != 1 || p.Changes[0].Kind != KindConflict {
 		t.Fatalf("expected conflict, got %+v", p.Changes)
 	}
-	if err := sy.Apply(context.Background(), p, false, false); err != nil {
-		t.Fatal(err)
+	if err := sy.Apply(context.Background(), p, false, false); err == nil {
+		t.Fatal("conflict push without --force must be rejected")
 	}
 	if s.gotUpdates != 0 {
 		t.Errorf("conflict applied without force: updates=%d", s.gotUpdates)
@@ -355,6 +380,145 @@ func TestPushNewComment(t *testing.T) {
 	_, p2 := plan(t, s, tree, bs, false)
 	if len(p2.Changes) != 0 {
 		t.Errorf("expected clean after comment push, got %+v", p2.Changes)
+	}
+}
+
+func TestPushAttachmentReplacesSameName(t *testing.T) {
+	s := newStub()
+	tree, bs := cloneInto(t, s)
+
+	attDir := filepath.Join(tree.ticketDir(bs.Slug, "t-1"), "attachments")
+	os.MkdirAll(attDir, 0o755)
+	attPath := filepath.Join(attDir, "spec.md")
+	os.WriteFile(attPath, []byte("version one"), 0o644)
+
+	// First push uploads the new file.
+	sy, p := plan(t, s, tree, bs, false)
+	if err := sy.Apply(context.Background(), p, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if s.gotUploads != 1 || len(s.attach["t1"]) != 1 {
+		t.Fatalf("after first push: uploads=%d remote=%d", s.gotUploads, len(s.attach["t1"]))
+	}
+
+	// Edit the same file and push again: it must REPLACE, not duplicate.
+	os.WriteFile(attPath, []byte("version two — much longer content"), 0o644)
+	sy2, p2 := plan(t, s, tree, bs, false)
+	if len(p2.Changes) != 1 || len(p2.Changes[0].NewAttachments) != 1 {
+		t.Fatalf("expected the edited attachment to be pending, got %+v", p2.Changes)
+	}
+	if err := sy2.Apply(context.Background(), p2, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if s.gotUploads != 2 || s.gotAttachDeletes != 1 {
+		t.Errorf("expected 1 replace (uploads=2, deletes=1), got uploads=%d deletes=%d", s.gotUploads, s.gotAttachDeletes)
+	}
+	if len(s.attach["t1"]) != 1 {
+		t.Errorf("same-named attachment duplicated on server: %d copies", len(s.attach["t1"]))
+	}
+}
+
+func TestPushRejectsConflictRequiresPull(t *testing.T) {
+	s := newStub()
+	tree, bs := cloneInto(t, s)
+
+	mdPath := filepath.Join(tree.ticketDir(bs.Slug, "t-1"), "ticket.md")
+	data, _ := os.ReadFile(mdPath)
+	os.WriteFile(mdPath, []byte(strings.ReplaceAll(string(data), "Old title", "Local title")), 0o644)
+	s.tickets["t1"].Title = "Remote title"
+	s.tickets["t1"].UpdatedAt = tptr("2026-03-03T00:00:00Z")
+
+	sy, p := plan(t, s, tree, bs, true)
+	if err := sy.Apply(context.Background(), p, false, false); err == nil {
+		t.Fatal("push must be rejected when the remote drifted")
+	}
+	if s.gotUpdates != 0 || s.gotMoves != 0 {
+		t.Errorf("nothing should be pushed on rejection: updates=%d moves=%d", s.gotUpdates, s.gotMoves)
+	}
+	// --force overrides.
+	sy2, p2 := plan(t, s, tree, bs, true)
+	if err := sy2.Apply(context.Background(), p2, false, true); err != nil {
+		t.Fatalf("force push should succeed: %v", err)
+	}
+	if s.tickets["t1"].Title != "Local title" {
+		t.Errorf("force push did not apply local: %q", s.tickets["t1"].Title)
+	}
+}
+
+func TestPushRejectsRemoteOnlyChange(t *testing.T) {
+	s := newStub()
+	tree, bs := cloneInto(t, s)
+	s.tickets["t1"].Title = "Remote title"
+	s.tickets["t1"].UpdatedAt = tptr("2026-03-03T00:00:00Z")
+
+	sy, p := plan(t, s, tree, bs, true)
+	if len(p.Changes) != 1 || p.Changes[0].Kind != KindRemote {
+		t.Fatalf("expected a remote-only change, got %+v", p.Changes)
+	}
+	if err := sy.Apply(context.Background(), p, false, false); err == nil {
+		t.Fatal("push must require a pull when the remote changed")
+	}
+}
+
+func TestStashResetsThenPopRestores(t *testing.T) {
+	s := newStub()
+	tree, bs := cloneInto(t, s)
+
+	mdPath := filepath.Join(tree.ticketDir(bs.Slug, "t-1"), "ticket.md")
+	orig, _ := os.ReadFile(mdPath)
+	os.WriteFile(mdPath, []byte(strings.ReplaceAll(string(orig), "old body", "my local work")), 0o644)
+
+	sy := &Syncer{API: s, Tree: tree, Board: bs}
+	entry, err := sy.Stash("wip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry == nil || len(entry.Tickets) != 1 {
+		t.Fatalf("stash entry = %+v", entry)
+	}
+
+	// Working copy is reset → a status check is clean.
+	_, p := plan(t, s, tree, bs, false)
+	if len(p.Changes) != 0 {
+		t.Fatalf("expected clean working copy after stash, got %+v", p.Changes)
+	}
+	if cur, _ := os.ReadFile(mdPath); strings.Contains(string(cur), "my local work") {
+		t.Error("ticket.md was not reset to baseline by stash")
+	}
+
+	// Pop restores the edit and drops the stash.
+	if err := sy.StashApply(entry, true); err != nil {
+		t.Fatal(err)
+	}
+	if cur, _ := os.ReadFile(mdPath); !strings.Contains(string(cur), "my local work") {
+		t.Error("stash pop did not restore the local edit")
+	}
+	_, p2 := plan(t, s, tree, bs, false)
+	if len(p2.Changes) != 1 || p2.Changes[0].Kind != KindUpdate {
+		t.Fatalf("expected the edit back as an update, got %+v", p2.Changes)
+	}
+	if list, _ := tree.ListStash(); len(list) != 0 {
+		t.Errorf("pop should drop the stash, %d remain", len(list))
+	}
+}
+
+func TestStashApplyKeepsEntry(t *testing.T) {
+	s := newStub()
+	tree, bs := cloneInto(t, s)
+	mdPath := filepath.Join(tree.ticketDir(bs.Slug, "t-1"), "ticket.md")
+	orig, _ := os.ReadFile(mdPath)
+	os.WriteFile(mdPath, []byte(strings.ReplaceAll(string(orig), "Old title", "Edited")), 0o644)
+
+	sy := &Syncer{API: s, Tree: tree, Board: bs}
+	entry, err := sy.Stash("")
+	if err != nil || entry == nil {
+		t.Fatalf("stash failed: %v / %+v", err, entry)
+	}
+	if err := sy.StashApply(entry, false); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := tree.ListStash(); len(list) != 1 {
+		t.Errorf("apply (no pop) should keep the stash, got %d", len(list))
 	}
 }
 

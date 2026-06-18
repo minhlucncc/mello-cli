@@ -119,6 +119,22 @@ func (s *Syncer) Apply(ctx context.Context, plan Plan, dryRun, force bool) error
 	if err != nil {
 		return err
 	}
+	// Pre-flight: a push must never clobber remote changes. If the remote drifted
+	// since the last sync — a conflict (both sides changed) or a remote-only
+	// change to a tracked ticket — refuse the whole push and require a pull/sync
+	// first. --force overrides (local wins); --dry-run still describes the plan.
+	if !dryRun && !force {
+		var blocked []string
+		for _, ch := range plan.Changes {
+			if ch.Kind == KindConflict || ch.Kind == KindRemote {
+				blocked = append(blocked, ch.Ref)
+			}
+		}
+		if len(blocked) > 0 {
+			return fmt.Errorf("remote changed since last sync (%s) — run `mello pull` (or `mello sync`) before pushing; use --force to overwrite, or `mello stash` to set local changes aside",
+				strings.Join(blocked, ", "))
+		}
+	}
 	applied := 0
 	for _, ch := range plan.Changes {
 		if dryRun {
@@ -252,15 +268,40 @@ func (s *Syncer) applyUpdate(ctx context.Context, ch Change, idToName, nameToID 
 		_ = os.Remove(pc.Path)
 		s.logf("~ commented on %s", ch.Ref)
 	}
-	for _, path := range ch.NewAttachments {
-		if _, err := s.API.UploadAttachment(ctx, ch.RemoteID, path); err != nil {
-			if mello.IsNotFound(err) {
-				s.logf("skip attachment on %s: uploads not supported here", ch.Ref)
-				break
+	if len(ch.NewAttachments) > 0 {
+		// Map existing remote attachments by filename so a changed file replaces
+		// its predecessor instead of piling up duplicates with the same name.
+		existing := map[string][]string{}
+		if atts, lerr := s.API.ListAttachments(ctx, ch.RemoteID); lerr == nil {
+			for _, a := range atts {
+				name := a.FileName()
+				existing[name] = append(existing[name], a.ID)
 			}
-			return err
+		} else if !mello.IsNotFound(lerr) {
+			return lerr
 		}
-		s.logf("~ uploaded %s to %s", filepath.Base(path), ch.Ref)
+		for _, path := range ch.NewAttachments {
+			name := filepath.Base(path)
+			// Delete any prior remote attachments with this name first (replace).
+			for _, id := range existing[name] {
+				if derr := s.API.DeleteAttachment(ctx, ch.RemoteID, id); derr != nil && !mello.IsNotFound(derr) {
+					return derr
+				}
+			}
+			if _, err := s.API.UploadAttachment(ctx, ch.RemoteID, path); err != nil {
+				if mello.IsNotFound(err) {
+					s.logf("skip attachment on %s: uploads not supported here", ch.Ref)
+					break
+				}
+				return err
+			}
+			if len(existing[name]) > 0 {
+				s.logf("~ replaced %s on %s", name, ch.Ref)
+			} else {
+				s.logf("~ uploaded %s to %s", name, ch.Ref)
+			}
+			delete(existing, name) // a name handled once won't be re-deleted
+		}
 	}
 	s.postNote(ctx, ch.RemoteID, ch.Ref)
 	if t, err := s.API.GetTicket(ctx, ch.RemoteID); err == nil {

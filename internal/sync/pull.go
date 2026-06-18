@@ -26,6 +26,7 @@ type API interface {
 	AddComment(ctx context.Context, ticketID, body string) (mello.Comment, error)
 	ListAttachments(ctx context.Context, ticketID string) ([]mello.Attachment, error)
 	UploadAttachment(ctx context.Context, ticketID, filePath string) (mello.Attachment, error)
+	DeleteAttachment(ctx context.Context, ticketID, attachmentID string) error
 	DownloadAttachment(ctx context.Context, ticketID string, att mello.Attachment, w io.Writer) error
 }
 
@@ -281,6 +282,7 @@ func (s *Syncer) writeTicket(ctx context.Context, t mello.Ticket, columnName, sl
 	rec.RemoteID = t.ID
 	rec.Code = t.TicketCode
 	rec.ColumnID = t.ColumnID
+	rec.ColumnName = columnName
 	rec.BaselineHash = remoteHash
 	if t.UpdatedAt != nil {
 		rec.RemoteUpdated = t.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
