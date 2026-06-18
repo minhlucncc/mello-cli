@@ -105,8 +105,10 @@ func (s *Syncer) ComputePlan(ctx context.Context, checkRemote bool) (Plan, error
 		}
 		plan.Changes = append(plan.Changes, Change{
 			Slug: slug, Ref: refDoc(doc, base), RemoteID: rec.RemoteID, ColumnID: base.ColumnID,
-			Kind: kind, Update: fieldUpd, HasFieldChange: fieldChanged, MoveToColumn: move,
-			NewComments: newComments, NewAttachments: newAtt,
+			Kind: kind, Update: fieldUpd, HasFieldChange: fieldChanged, UpdateBodyFormat: doc.BodyFormat,
+			MoveToColumn:   move,
+			NewComments:    newComments,
+			NewAttachments: newAtt,
 		})
 	}
 	return plan, nil
@@ -196,7 +198,8 @@ func (s *Syncer) applyCreate(ctx context.Context, ch Change, idToName, nameToID 
 		s.logf("skip create %s: no column named %q", ch.Ref, ch.CreateColumn)
 		return nil
 	}
-	t, err := s.API.CreateTicket(ctx, colID, doc.Title, doc.Description)
+	outPlain, outHTML := outgoingDescription(*doc)
+	t, err := s.API.CreateTicket(ctx, colID, doc.Title, outPlain, outHTML)
 	if err != nil {
 		return err
 	}
@@ -241,6 +244,23 @@ func (s *Syncer) applyCreate(ctx context.Context, ch Change, idToName, nameToID 
 
 func (s *Syncer) applyUpdate(ctx context.Context, ch Change, idToName, nameToID map[string]string) error {
 	if ch.HasFieldChange {
+		// If the working doc had a description change, the diff helper stashed
+		// the raw body in ch.Update.Description. Convert it to the right
+		// (description, description_html) pair here, at the last moment, so the
+		// bytes the server sees render in the web UI.
+		if ch.Update.Description != nil {
+			plain, html := outgoingDescription(TicketDoc{Description: *ch.Update.Description, BodyFormat: ch.UpdateBodyFormat})
+			if plain == "" {
+				ch.Update.Description = nil
+			} else {
+				ch.Update.Description = &plain
+			}
+			if html == "" {
+				ch.Update.DescriptionHTML = nil
+			} else {
+				ch.Update.DescriptionHTML = &html
+			}
+		}
 		if _, err := s.API.UpdateTicket(ctx, ch.RemoteID, ch.Update); err != nil {
 			if mello.IsNotFound(err) {
 				s.logf("skip field edit on %s: PATCH not supported here", ch.Ref)
@@ -320,6 +340,32 @@ func (s *Syncer) postNote(ctx context.Context, ticketID, ref string) {
 		return
 	}
 	s.logf("~ noted change on %s", ref)
+}
+
+// outgoingDescription returns the (plain, html) description pair the API
+// should receive, based on the working doc's body_format:
+//   - "" / "source" (default): body is Markdown source → convert to HTML
+//     (description_html); description is left empty (the server auto-derives
+//     a plain-text fallback from the HTML).
+//   - "html": body is already HTML → send as description_html verbatim.
+//   - "plain": body is plain text → send as description only.
+//
+// On a conversion error, the raw Markdown is returned in `plain` with `html`
+// empty (the push is not blocked by a broken converter).
+func outgoingDescription(doc TicketDoc) (plain, html string) {
+	switch doc.BodyFormat {
+	case BodyFormatHTML:
+		return "", doc.Description
+	case BodyFormatPlain:
+		return doc.Description, ""
+	default: // "" or "source"
+		converted, err := RenderMarkdownToSafeHTML(doc.Description)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: md→html conversion failed (%v); sending plain text only\n", err)
+			return doc.Description, ""
+		}
+		return "", converted
+	}
 }
 
 func (s *Syncer) describe(ch Change) {

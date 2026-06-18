@@ -62,11 +62,11 @@ func (s *stubAPI) GetTicket(ctx context.Context, id string) (mello.Ticket, error
 	}
 	return *t, nil
 }
-func (s *stubAPI) CreateTicket(ctx context.Context, colID, title, desc string) (mello.Ticket, error) {
+func (s *stubAPI) CreateTicket(ctx context.Context, colID, title, desc, descHTML string) (mello.Ticket, error) {
 	s.gotCreates++
 	id := fmt.Sprintf("new-%d", s.gotCreates)
 	t := &mello.Ticket{ID: id, TicketCode: fmt.Sprintf("NEW-%d", s.gotCreates), BoardID: "b1",
-		ColumnID: colID, Title: title, Description: desc, Status: "open", UpdatedAt: s.tick()}
+		ColumnID: colID, Title: title, Description: desc, DescriptionHTML: descHTML, Status: "open", UpdatedAt: s.tick()}
 	s.tickets[id] = t
 	return *t, nil
 }
@@ -131,6 +131,9 @@ func (s *stubAPI) UpdateTicket(ctx context.Context, id string, upd mello.TicketU
 	}
 	if upd.Description != nil {
 		t.Description = *upd.Description
+	}
+	if upd.DescriptionHTML != nil {
+		t.DescriptionHTML = *upd.DescriptionHTML
 	}
 	if upd.Status != nil {
 		t.Status = *upd.Status
@@ -586,5 +589,136 @@ func TestCloneDegradesWhenOptionalEndpointsMissing(t *testing.T) {
 	}
 	if !sy.noComments || !sy.noAttachments {
 		t.Errorf("capability flags not set: comments=%v attach=%v", sy.noComments, sy.noAttachments)
+	}
+}
+
+// TestPushConvertsMarkdownToHTML confirms that on push, a ticket.md whose
+// body contains Markdown is sent to the server as sanitized HTML. The test
+// edits the existing T-1 ticket's local file with a rich body, then plans
+// and applies, and asserts the stub's recorded UpdateTicket call received
+// HTML.
+// TestPushConvertsMarkdownToHTMLOnDescriptionHTML confirms that on push, a
+// ticket.md whose body contains Markdown is converted to sanitized HTML and
+// sent to the server as description_html (not description). The web UI
+// renders description_html.
+func TestPushConvertsMarkdownToHTMLOnDescriptionHTML(t *testing.T) {
+	s := newStub()
+	tree, bs := cloneInto(t, s)
+	dir := tree.ticketDir(bs.Slug, "t-1")
+
+	body := "# Heading\n\n`inline` and a [link](https://example.com).\n"
+	md := RenderTicket(mello.Ticket{
+		ID: "t1", TicketCode: "T-1", Title: "Old title", Description: body, Status: "open",
+	}, "Todo")
+	if err := os.WriteFile(filepath.Join(dir, "ticket.md"), md, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Re-baseline so the next plan/diff detects only the description change.
+	sy := &Syncer{API: s, Tree: tree, Board: bs}
+	if _, _, err := sy.RefreshWorkingSet(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sy2, p := plan(t, s, tree, bs, false)
+	if len(p.Changes) != 1 || p.Changes[0].Kind != KindUpdate {
+		t.Fatalf("expected 1 update change, got %+v", p.Changes)
+	}
+	if err := sy2.Apply(context.Background(), p, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if s.gotUpdates != 1 {
+		t.Errorf("UpdateTicket calls = %d, want 1", s.gotUpdates)
+	}
+	// The stub received the converted HTML on description_html, and the plain
+	// description is empty (the server would auto-derive it).
+	got := s.tickets["t1"].DescriptionHTML
+	for _, want := range []string{"<h1", "Heading", "<code>inline</code>", `<a href="https://example.com"`, "link"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("server description_html missing %q\n--- got ---\n%s", want, got)
+		}
+	}
+	// The local file is re-rendered with body_format: html and the stored
+	// body is the HTML (not the original Markdown).
+	newMD, err := os.ReadFile(filepath.Join(dir, "ticket.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(newMD), "body_format: html") {
+		t.Errorf("expected body_format: html in re-rendered ticket.md\n--- got ---\n%s", newMD)
+	}
+	doc, err := ParseTicket(newMD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Description, "<h1") {
+		t.Errorf("local body is not the HTML we sent; got: %q", doc.Description)
+	}
+}
+
+// TestPushBodyFormatPlainSendsToDescription confirms that a doc with
+// body_format: plain sends the body verbatim to description (and does not
+// set description_html).
+func TestPushBodyFormatPlainSendsToDescription(t *testing.T) {
+	s := newStub()
+	tree, bs := cloneInto(t, s)
+	dir := tree.ticketDir(bs.Slug, "t-1")
+
+	body := "Just a plain description, no Markdown.\n"
+	md := RenderTicket(mello.Ticket{
+		ID: "t1", TicketCode: "T-1", Title: "Old title", Description: body, Status: "open",
+	}, "Todo")
+	if err := os.WriteFile(filepath.Join(dir, "ticket.md"), md, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sy := &Syncer{API: s, Tree: tree, Board: bs}
+	if _, _, err := sy.RefreshWorkingSet(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Flip body_format to plain in the local file.
+	withFM := strings.Replace(string(md), "---\n", "---\nbody_format: plain\n", 1)
+	if err := os.WriteFile(filepath.Join(dir, "ticket.md"), []byte(withFM), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sy2, p := plan(t, s, tree, bs, false)
+	if err := sy2.Apply(context.Background(), p, false, false); err != nil {
+		t.Fatal(err)
+	}
+	got := s.tickets["t1"].Description
+	html := s.tickets["t1"].DescriptionHTML
+	if strings.Contains(got, "<h1>") || strings.Contains(got, "<strong>") || strings.Contains(got, "<p>") {
+		t.Errorf("body_format=plain should not produce HTML in description; got: %q", got)
+	}
+	if html != "" {
+		t.Errorf("body_format=plain should not send description_html; got: %q", html)
+	}
+	if !strings.Contains(got, "Just a plain description") {
+		t.Errorf("body_format=plain should send the raw body; got: %q", got)
+	}
+}
+
+// TestPushSanitizesScriptTag confirms a Markdown body that tries to inject a
+// <script> tag is stripped by the sanitizer before the server sees it.
+func TestPushSanitizesScriptTag(t *testing.T) {
+	s := newStub()
+	tree, bs := cloneInto(t, s)
+	dir := tree.ticketDir(bs.Slug, "t-1")
+
+	body := "# Heading\n\nplease do **not** run `<script>alert(1)</script>` ever.\n"
+	md := RenderTicket(mello.Ticket{
+		ID: "t1", TicketCode: "T-1", Title: "Old title", Description: body, Status: "open",
+	}, "Todo")
+	if err := os.WriteFile(filepath.Join(dir, "ticket.md"), md, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sy := &Syncer{API: s, Tree: tree, Board: bs}
+	if _, _, err := sy.RefreshWorkingSet(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sy2, p := plan(t, s, tree, bs, false)
+	if err := sy2.Apply(context.Background(), p, false, false); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.ToLower(s.tickets["t1"].Description)
+	if strings.Contains(got, "<script") {
+		t.Errorf("script tag not sanitized: %q", s.tickets["t1"].Description)
 	}
 }

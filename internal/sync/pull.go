@@ -18,7 +18,7 @@ type API interface {
 	ListColumns(ctx context.Context, boardID string) ([]mello.Column, error)
 	ListTickets(ctx context.Context, workspaceID, updatedAfter string) ([]mello.Ticket, error)
 	GetTicket(ctx context.Context, ticketID string) (mello.Ticket, error)
-	CreateTicket(ctx context.Context, columnID, title, description string) (mello.Ticket, error)
+	CreateTicket(ctx context.Context, columnID, title, description, descriptionHTML string) (mello.Ticket, error)
 	UpdateTicket(ctx context.Context, ticketID string, upd mello.TicketUpdate) (mello.Ticket, error)
 	DeleteTicket(ctx context.Context, ticketID string) error
 	MoveTicket(ctx context.Context, ticketID, columnID string, position int) (mello.Ticket, error)

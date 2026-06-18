@@ -29,11 +29,12 @@ type Change struct {
 
 	Kind ChangeKind
 
-	Update         mello.TicketUpdate
-	HasFieldChange bool
-	MoveToColumn   string // destination column NAME; empty if no move
-	NewComments    []PendingComment
-	NewAttachments []string // local file paths to upload
+	Update           mello.TicketUpdate
+	HasFieldChange   bool
+	UpdateBodyFormat string // doc.BodyFormat at plan time; needed by applyUpdate to convert description on the way out
+	MoveToColumn     string // destination column NAME; empty if no move
+	NewComments      []PendingComment
+	NewAttachments   []string // local file paths to upload
 
 	// For create: the full desired doc + target column name.
 	CreateDoc    *TicketDoc

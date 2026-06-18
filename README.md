@@ -189,6 +189,56 @@ Synchronization is incremental and based on content hashes; concurrent edits on
 both sides are surfaced as conflicts. The model is described in full in
 [docs/working-copy.md](docs/working-copy.md).
 
+### Description body and `body_format`
+
+The body of `ticket.md` (everything after the front matter) is the ticket
+description. The server stores two fields:
+
+- `description` — the plain-text body, also used as a fallback when no rich
+  content is available.
+- `description_html` — the HTML the web UI renders. The server auto-derives
+  `description` from `description_html` when only HTML is sent.
+
+By default the body in `ticket.md` is treated as **Markdown source** and is
+converted to sanitized HTML on `mello push` and sent as `description_html`.
+Headings, code blocks, links, tables, emphasis, and lists render in the web
+UI exactly as they would in a GitHub README.
+
+The `body_format` front matter key controls this on a per-ticket basis:
+
+- **omitted / `body_format: source` (default)** — the body is Markdown source.
+  On push, it is rendered to HTML, sanitized, and sent as `description_html`.
+- **`body_format: html`** — the body is already HTML. On push it is sent as
+  `description_html` verbatim. The CLI writes this value when it pulls a
+  ticket whose remote `description_html` is non-empty, so the round-trip is
+  byte-stable. Edit the HTML in place, or change the key to `source` and
+  replace the body with Markdown source.
+- **`body_format: plain`** — the body is plain text. On push it is sent as
+  `description` only (`description_html` is not touched). Use this when the
+  description is plain text and you do not want the server to wrap it.
+
+```yaml
+---
+ticket: PROJ-12
+id: ...
+title: Login: fix redirect
+status: open
+assignee: ""
+column: In Progress
+labels: [bug, p1]
+body_format: source   # optional; default = source (Markdown → HTML on push)
+---
+
+# Steps to reproduce
+
+1. open
+2. boom
+```
+
+The front matter is a small, hand-written YAML subset. A line with no `:` is
+treated as a parse error. Backslashes and embedded double quotes in scalar
+values are escaped as `\\` and `\"` and round-trip cleanly.
+
 ## Scripting
 
 Read commands accept `--json` for use in pipelines:

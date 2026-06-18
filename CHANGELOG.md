@@ -6,6 +6,25 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-18
+
+### Added
+
+- The ticket description body in `ticket.md` is now real Markdown. By default
+  it is converted to sanitized HTML and sent as `description_html` on
+  `mello push`, so headings, code blocks, links, lists, tables, and emphasis
+  render in the web UI. The server auto-derives the plain-text `description`
+  from the HTML when only HTML is sent.
+- A new `body_format` front matter key selects the on-wire representation:
+  omit it (or set it to `source`) to send Markdown → HTML, set it to `html`
+  to send the body verbatim as `description_html` (used by the CLI when it
+  pulls a ticket whose remote `description_html` is non-empty, so the
+  round-trip is byte-stable), or set it to `plain` to send the body as
+  `description` only.
+- New dependencies: [`goldmark`](https://github.com/yuin/goldmark) (Markdown
+  parser) and [`bluemonday`](https://github.com/microcosm-cc/bluemonday) (HTML
+  sanitizer, UGC policy). Pulled in via `go mod tidy` on `go 1.22+`.
+
 ### Fixed
 
 - Decode tickets whose `labels` are returned as objects (the live API shape), not
@@ -13,6 +32,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Flags are now accepted after positional arguments (for example
   `mello ticket move <id> --column <c>`); previously such flags were silently
   ignored.
+- Front matter scalar values now escape and unescape backslashes (`\\`),
+  embedded double quotes (`\"`), and the standard `\n` / `\t` / `\r` escapes
+  correctly. Values containing these characters previously round-tripped
+  incorrectly (e.g. `path\"foo` was read back as `path"foo`).
+- A front matter line without a `:` separator now produces a clear parse
+  error instead of being silently dropped.
 
 ### Changed
 

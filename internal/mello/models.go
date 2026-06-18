@@ -138,26 +138,27 @@ type BoardDetail struct {
 
 // Ticket is a single card on a board.
 type Ticket struct {
-	ID          string         `json:"id"`
-	TicketCode  string         `json:"ticket_code,omitempty"`
-	ColumnID    string         `json:"column_id,omitempty"`
-	BoardID     string         `json:"board_id,omitempty"`
-	Title       string         `json:"title"`
-	Description string         `json:"description,omitempty"`
-	Position    int            `json:"position,omitempty"`
-	Status      string         `json:"status,omitempty"`
-	AssigneeID  string         `json:"assignee_id,omitempty"`
-	Members     Members        `json:"members,omitempty"`
-	Assignees   Members        `json:"assignees,omitempty"`
-	Labels      Labels         `json:"labels,omitempty"`
-	Attachments []Attachment   `json:"attachments,omitempty"`
-	Files       []Attachment   `json:"files,omitempty"`
-	Media       []Attachment   `json:"media,omitempty"`
-	ColumnName  string         `json:"column_name,omitempty"`
-	Comments    []Comment      `json:"comments,omitempty"`   // embedded (internal API)
-	Activities  []HistoryEntry `json:"activities,omitempty"` // embedded history (internal API)
-	CreatedAt   *time.Time     `json:"created_at,omitempty"`
-	UpdatedAt   *time.Time     `json:"updated_at,omitempty"`
+	ID             string         `json:"id"`
+	TicketCode     string         `json:"ticket_code,omitempty"`
+	ColumnID       string         `json:"column_id,omitempty"`
+	BoardID        string         `json:"board_id,omitempty"`
+	Title          string         `json:"title"`
+	Description    string         `json:"description,omitempty"`
+	DescriptionHTML string        `json:"description_html,omitempty"`
+	Position       int            `json:"position,omitempty"`
+	Status         string         `json:"status,omitempty"`
+	AssigneeID     string         `json:"assignee_id,omitempty"`
+	Members        Members        `json:"members,omitempty"`
+	Assignees      Members        `json:"assignees,omitempty"`
+	Labels         Labels         `json:"labels,omitempty"`
+	Attachments    []Attachment   `json:"attachments,omitempty"`
+	Files          []Attachment   `json:"files,omitempty"`
+	Media          []Attachment   `json:"media,omitempty"`
+	ColumnName     string         `json:"column_name,omitempty"`
+	Comments       []Comment      `json:"comments,omitempty"`   // embedded (internal API)
+	Activities     []HistoryEntry `json:"activities,omitempty"` // embedded history (internal API)
+	CreatedAt      *time.Time     `json:"created_at,omitempty"`
+	UpdatedAt      *time.Time     `json:"updated_at,omitempty"`
 }
 
 // AttachmentList returns attachments embedded in the ticket, however they are

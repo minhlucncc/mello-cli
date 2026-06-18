@@ -30,10 +30,18 @@ func (c *Client) GetTicketRaw(ctx context.Context, ticketID string) (json.RawMes
 }
 
 // CreateTicket creates a ticket in a column (POST /columns/{id}/tickets).
-func (c *Client) CreateTicket(ctx context.Context, columnID, title, description string) (Ticket, error) {
+//
+// description is the plain-text body; descriptionHTML is the rich body the
+// web UI renders (e.g. Markdown → HTML). Either or both may be empty; the
+// server stores whatever is sent and auto-derives the plain text from the
+// HTML when only HTML is provided.
+func (c *Client) CreateTicket(ctx context.Context, columnID, title, description, descriptionHTML string) (Ticket, error) {
 	body := map[string]any{"title": title}
 	if description != "" {
 		body["description"] = description
+	}
+	if descriptionHTML != "" {
+		body["description_html"] = descriptionHTML
 	}
 	var out Ticket
 	path := fmt.Sprintf("/columns/%s/tickets", url.PathEscape(columnID))
@@ -58,16 +66,17 @@ func (c *Client) MoveTicket(ctx context.Context, ticketID, columnID string, posi
 // TicketUpdate carries the editable fields for UpdateTicket. Only non-nil fields
 // are sent, so callers patch exactly what changed.
 type TicketUpdate struct {
-	Title       *string
-	Description *string
-	Status      *string
-	AssigneeID  *string
-	Labels      *[]string
+	Title          *string
+	Description    *string
+	DescriptionHTML *string
+	Status         *string
+	AssigneeID     *string
+	Labels         *[]string
 }
 
 func (u TicketUpdate) empty() bool {
-	return u.Title == nil && u.Description == nil && u.Status == nil &&
-		u.AssigneeID == nil && u.Labels == nil
+	return u.Title == nil && u.Description == nil && u.DescriptionHTML == nil &&
+		u.Status == nil && u.AssigneeID == nil && u.Labels == nil
 }
 
 func (u TicketUpdate) body() map[string]any {
@@ -77,6 +86,9 @@ func (u TicketUpdate) body() map[string]any {
 	}
 	if u.Description != nil {
 		b["description"] = *u.Description
+	}
+	if u.DescriptionHTML != nil {
+		b["description_html"] = *u.DescriptionHTML
 	}
 	if u.Status != nil {
 		b["status"] = *u.Status

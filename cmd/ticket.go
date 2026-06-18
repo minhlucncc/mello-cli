@@ -460,7 +460,7 @@ func ticketCreate(args []string) error {
 			return fmt.Errorf("no column %q on this board. Columns: %s", *column, columnNames(cols))
 		}
 	}
-	t, err := cl.CreateTicket(cx, colID, *title, body)
+	t, err := cl.CreateTicket(cx, colID, *title, body, "")
 	if err != nil {
 		return err
 	}

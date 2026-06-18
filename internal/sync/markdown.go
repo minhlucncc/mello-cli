@@ -108,6 +108,24 @@ func dashIfEmpty(s string) string {
 	return s
 }
 
+// Body format options for the description body. The CLI uses these to decide
+// what to send to the server on push.
+//
+//   - omitted / "source" (default): the body is Markdown source. The CLI
+//     converts it to sanitized HTML and sends it as `description_html` so the
+//     web UI renders it.
+//   - "html": the body is already HTML. The CLI sends it as `description_html`
+//     verbatim. The CLI uses this value when it pulls a ticket whose remote
+//     description_html is non-empty and stores it as the local body — the
+//     round-trip is byte-stable.
+//   - "plain": the body is plain text. The CLI sends it as `description` only;
+//     `description_html` is not sent.
+const (
+	BodyFormatSource = "source" // local body is Markdown source; push converts to HTML
+	BodyFormatHTML   = "html"   // local body is HTML; push sends verbatim as description_html
+	BodyFormatPlain  = "plain"  // local body is plain text; push sends as description only
+)
+
 // TicketDoc is the editable view of a ticket stored in ticket.md: frontmatter
 // fields plus the description body. Read-only fields (ticket code, id) are kept
 // for display but ignored on push.
@@ -119,11 +137,17 @@ type TicketDoc struct {
 	Assignee    string
 	Labels      []string
 	Column      string // column NAME (resolved to id on push)
-	Description string // body below frontmatter
+	Description string // body below frontmatter (interpretation depends on BodyFormat)
+	BodyFormat  string // "" = source (default), "html", or "plain"
 }
 
 // RenderTicket serializes a ticket to Markdown (frontmatter + body). columnName
 // is the human column name for the ticket's column.
+//
+// If the server returned a non-empty description_html, the local body stores
+// that HTML verbatim and the frontmatter gets body_format: html so the
+// round-trip is byte-stable. The user can edit the HTML directly, or change
+// body_format to "source" and replace the body with Markdown.
 func RenderTicket(t mello.Ticket, columnName string) []byte {
 	var b strings.Builder
 	b.WriteString("---\n")
@@ -134,9 +158,20 @@ func RenderTicket(t mello.Ticket, columnName string) []byte {
 	writeKV(&b, "assignee", t.AssigneeID)
 	writeKV(&b, "column", columnName)
 	b.WriteString("labels: " + renderList(t.Labels) + "\n")
+
+	// Decide what the body of ticket.md holds. The server's description_html
+	// is the source of truth for "rich" content; when it's present, store it
+	// verbatim so the next push is lossless.
+	var body string
+	if t.DescriptionHTML != "" {
+		writeKV(&b, "body_format", BodyFormatHTML)
+		body = t.DescriptionHTML
+	} else {
+		body = t.Description
+	}
 	b.WriteString("---\n\n")
-	b.WriteString(t.Description)
-	if !strings.HasSuffix(t.Description, "\n") {
+	b.WriteString(body)
+	if !strings.HasSuffix(body, "\n") {
 		b.WriteString("\n")
 	}
 	return []byte(b.String())
@@ -170,7 +205,16 @@ func ParseTicket(data []byte) (TicketDoc, error) {
 		}
 		key, val, ok := strings.Cut(line, ":")
 		if !ok {
-			continue
+			// A `key:` (no value) at the end of a file is fine — the value is
+			// just empty. But a `key` with no colon at all is malformed.
+			trimmed := strings.TrimSpace(line)
+			if strings.HasSuffix(trimmed, ":") {
+				// Empty value: treat as the empty string.
+				key = strings.TrimSuffix(trimmed, ":")
+				val = `""`
+			} else {
+				return doc, fmt.Errorf("malformed frontmatter line: %q", line)
+			}
 		}
 		key = strings.TrimSpace(key)
 		val = strings.TrimSpace(val)
@@ -189,6 +233,8 @@ func ParseTicket(data []byte) (TicketDoc, error) {
 			doc.Column = unquote(val)
 		case "labels":
 			doc.Labels = parseList(val)
+		case "body_format":
+			doc.BodyFormat = unquote(val)
 		}
 	}
 	doc.Description = strings.TrimRight(body, "\n")
@@ -199,14 +245,18 @@ func writeKV(b *strings.Builder, key, val string) {
 	b.WriteString(key + ": " + quoteIfNeeded(val) + "\n")
 }
 
-// quoteIfNeeded wraps scalars that could confuse the minimal parser.
+// quoteIfNeeded wraps scalars that could confuse the minimal parser. The
+// backslash is escaped first so the unquote step is unambiguous.
 func quoteIfNeeded(s string) string {
 	if s == "" {
 		return `""`
 	}
 	if strings.ContainsAny(s, ":#\"'") || strings.HasPrefix(s, " ") || strings.HasSuffix(s, " ") ||
 		strings.HasPrefix(s, "[") {
-		return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+		// Escape backslash first, then the quote.
+		escaped := strings.ReplaceAll(s, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		return `"` + escaped + `"`
 	}
 	return s
 }
@@ -214,7 +264,40 @@ func quoteIfNeeded(s string) string {
 func unquote(s string) string {
 	if len(s) >= 2 && (s[0] == '"' && s[len(s)-1] == '"') {
 		inner := s[1 : len(s)-1]
-		return strings.ReplaceAll(inner, `\"`, `"`)
+		// Unescape in the inverse order of quoteIfNeeded: handle backslash
+		// sequences with a small state machine. This is a deliberately tiny
+		// subset of YAML's double-quoted scalar escapes — just what the CLI
+		// emits itself.
+		var b strings.Builder
+		for i := 0; i < len(inner); i++ {
+			c := inner[i]
+			if c == '\\' && i+1 < len(inner) {
+				switch inner[i+1] {
+				case '\\':
+					b.WriteByte('\\')
+					i++
+					continue
+				case '"':
+					b.WriteByte('"')
+					i++
+					continue
+				case 'n':
+					b.WriteByte('\n')
+					i++
+					continue
+				case 't':
+					b.WriteByte('\t')
+					i++
+					continue
+				case 'r':
+					b.WriteByte('\r')
+					i++
+					continue
+				}
+			}
+			b.WriteByte(c)
+		}
+		return b.String()
 	}
 	if len(s) >= 2 && (s[0] == '\'' && s[len(s)-1] == '\'') {
 		return s[1 : len(s)-1]
