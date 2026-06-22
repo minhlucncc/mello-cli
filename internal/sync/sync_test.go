@@ -84,7 +84,7 @@ func (s *stubAPI) ListComments(ctx context.Context, id string) ([]mello.Comment,
 	}
 	return s.comments[id], nil
 }
-func (s *stubAPI) AddComment(ctx context.Context, id, body string) (mello.Comment, error) {
+func (s *stubAPI) AddComment(ctx context.Context, id, body, bodyHTML string) (mello.Comment, error) {
 	s.gotComment = append(s.gotComment, body)
 	c := mello.Comment{ID: "c-new", TicketID: id, Body: body}
 	s.comments[id] = append(s.comments[id], c)

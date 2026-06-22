@@ -79,7 +79,7 @@ func commentAdd(args []string) error {
 	}
 	cx, cancel := ctx()
 	defer cancel()
-	cm, err := cl.AddComment(cx, fs.Arg(0), text)
+	cm, err := cl.AddComment(cx, fs.Arg(0), text, "")
 	if err != nil {
 		return err
 	}

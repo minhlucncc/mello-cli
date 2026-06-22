@@ -23,7 +23,7 @@ type API interface {
 	DeleteTicket(ctx context.Context, ticketID string) error
 	MoveTicket(ctx context.Context, ticketID, columnID string, position int) (mello.Ticket, error)
 	ListComments(ctx context.Context, ticketID string) ([]mello.Comment, error)
-	AddComment(ctx context.Context, ticketID, body string) (mello.Comment, error)
+	AddComment(ctx context.Context, ticketID, body, bodyHTML string) (mello.Comment, error)
 	ListAttachments(ctx context.Context, ticketID string) ([]mello.Attachment, error)
 	UploadAttachment(ctx context.Context, ticketID, filePath string) (mello.Attachment, error)
 	DeleteAttachment(ctx context.Context, ticketID, attachmentID string) error

@@ -223,7 +223,7 @@ func (s *Syncer) applyCreate(ctx context.Context, ch Change, idToName, nameToID 
 		}
 	}
 	for _, pc := range ch.NewComments {
-		if _, err := s.API.AddComment(ctx, t.ID, pc.Body); err != nil {
+		if _, err := s.API.AddComment(ctx, t.ID, pc.Body, ""); err != nil {
 			return err
 		}
 		_ = os.Remove(pc.Path)
@@ -282,7 +282,7 @@ func (s *Syncer) applyUpdate(ctx context.Context, ch Change, idToName, nameToID 
 		}
 	}
 	for _, pc := range ch.NewComments {
-		if _, err := s.API.AddComment(ctx, ch.RemoteID, pc.Body); err != nil {
+		if _, err := s.API.AddComment(ctx, ch.RemoteID, pc.Body, ""); err != nil {
 			return err
 		}
 		_ = os.Remove(pc.Path)
@@ -342,7 +342,8 @@ func (s *Syncer) postNote(ctx context.Context, ticketID, ref string) {
 	if s.Note == "" {
 		return
 	}
-	if _, err := s.API.AddComment(ctx, ticketID, s.Note); err != nil {
+	noteHTML := mello.MarkdownToHTML(s.Note)
+	if _, err := s.API.AddComment(ctx, ticketID, s.Note, noteHTML); err != nil {
 		s.logf("note comment failed on %s: %v", ref, err)
 		return
 	}
