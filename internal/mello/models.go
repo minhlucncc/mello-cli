@@ -207,6 +207,7 @@ type Comment struct {
 	AuthorID   string     `json:"author_id,omitempty"`
 	AuthorName string     `json:"author_name,omitempty"`
 	Body       string     `json:"body,omitempty"`
+	BodyHTML   string     `json:"body_html,omitempty"`
 	CreatedAt  *time.Time `json:"created_at,omitempty"`
 }
 
@@ -220,6 +221,7 @@ func (cm *Comment) UnmarshalJSON(data []byte) error {
 	cm.ID = pickStr(m, "id", "uuid")
 	cm.TicketID = pickStr(m, "ticket_id")
 	cm.Body = pickStr(m, "body", "content", "text", "message", "comment")
+	cm.BodyHTML = pickStr(m, "body_html", "bodyHtml", "html_body", "htmlBody")
 	cm.AuthorID = pickStr(m, "author_id", "user_id", "created_by")
 	cm.AuthorName = pickStr(m, "author_name", "user_name")
 	for _, k := range []string{"author", "user", "member"} {
