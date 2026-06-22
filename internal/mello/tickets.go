@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // GetTicket fetches one ticket by id (GET /tickets/{id}).
@@ -89,6 +90,12 @@ func (u TicketUpdate) body() map[string]any {
 	}
 	if u.DescriptionHTML != nil {
 		b["description_html"] = *u.DescriptionHTML
+	} else if u.Description != nil {
+		// Auto-render Markdown to HTML for the description_html field.
+		html := MarkdownToHTML(*u.Description)
+		if html != "" {
+			b["description_html"] = html
+		}
 	}
 	if u.Status != nil {
 		b["status"] = *u.Status
@@ -160,4 +167,241 @@ func (c *Client) GetTicketHistory(ctx context.Context, ticketID string) ([]Histo
 		return nil, err
 	}
 	return out, nil
+}
+
+// MarkdownToHTML converts simple Markdown to HTML for the description_html field.
+// Handles bold, italic, lists, headings, links, images, and horizontal rules.
+// When both caller-supplied DescriptionHTML and auto-rendered HTML are available,
+// the caller-supplied value takes precedence.
+func MarkdownToHTML(md string) string {
+	if md == "" {
+		return ""
+	}
+	lines := strings.Split(md, "\n")
+	var b strings.Builder
+	inList := false
+	pOpen := false
+
+	closeP := func() {
+		if pOpen {
+			b.WriteString("</p>\n")
+			pOpen = false
+		}
+	}
+	openP := func() {
+		if !pOpen {
+			if inList {
+				b.WriteString("</ul>\n")
+				inList = false
+			}
+			b.WriteString("<p>")
+			pOpen = true
+		}
+	}
+	closeList := func() {
+		if inList {
+			closeP()
+			b.WriteString("</ul>\n")
+			inList = false
+		}
+	}
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "" {
+			closeP()
+			closeList()
+			continue
+		}
+		if trimmed == "---" {
+			closeP()
+			closeList()
+			b.WriteString("<hr>\n")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "### ") {
+			closeP()
+			closeList()
+			b.WriteString("<h3>")
+			b.WriteString(renderInline(trimmed[4:]))
+			b.WriteString("</h3>\n")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			closeP()
+			closeList()
+			b.WriteString("<h2>")
+			b.WriteString(renderInline(trimmed[3:]))
+			b.WriteString("</h2>\n")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "# ") {
+			closeP()
+			closeList()
+			b.WriteString("<h1>")
+			b.WriteString(renderInline(trimmed[2:]))
+			b.WriteString("</h1>\n")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			closeP()
+			if !inList {
+				b.WriteString("<ul>\n")
+				inList = true
+			}
+			content := strings.TrimPrefix(trimmed, "- ")
+			content = strings.TrimPrefix(content, "* ")
+			b.WriteString("<li>")
+			b.WriteString(renderInline(content))
+			b.WriteString("</li>\n")
+			continue
+		}
+		closeList()
+		if !pOpen {
+			openP()
+		} else {
+			b.WriteString("<br>\n")
+		}
+		b.WriteString(renderInline(trimmed))
+		if i == len(lines)-1 || strings.TrimSpace(lines[i+1]) == "" {
+			closeP()
+		}
+	}
+	closeP()
+	closeList()
+	return strings.TrimSpace(b.String())
+}
+
+func renderInline(text string) string {
+	text = replacePairs(text, "**", "<strong>", "**", "</strong>")
+	text = replacePairs(text, "__", "<strong>", "__", "</strong>")
+	text = replacePairsStar(text)
+	text = replacePairs(text, "`", "<code>", "`", "</code>")
+	text = replaceImg(text)
+	text = replaceLinks(text)
+	return text
+}
+
+func replacePairs(s, openDelim, openTag, closeDelim, closeTag string) string {
+	var b strings.Builder
+	for {
+		oi := strings.Index(s, openDelim)
+		if oi < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:oi])
+		rest := s[oi+len(openDelim):]
+		ci := strings.Index(rest, closeDelim)
+		if ci < 0 {
+			b.WriteString(s[oi:])
+			return b.String()
+		}
+		b.WriteString(openTag)
+		b.WriteString(rest[:ci])
+		b.WriteString(closeTag)
+		s = rest[ci+len(closeDelim):]
+	}
+}
+
+func replacePairsStar(s string) string {
+	var b strings.Builder
+	for {
+		oi := strings.Index(s, "*")
+		if oi < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		if len(s) > oi+1 && s[oi+1] == '*' {
+			b.WriteString(s[:oi+1])
+			s = s[oi+1:]
+			continue
+		}
+		b.WriteString(s[:oi])
+		rest := s[oi+1:]
+		ci := strings.Index(rest, "*")
+		if ci < 0 || (len(rest) > ci+1 && rest[ci+1] == '*') {
+			b.WriteString(s[oi : oi+1])
+			s = rest
+			continue
+		}
+		b.WriteString("<em>")
+		b.WriteString(rest[:ci])
+		b.WriteString("</em>")
+		s = rest[ci+1:]
+	}
+}
+
+func replaceLinks(s string) string {
+	var b strings.Builder
+	for {
+		oi := strings.Index(s, "[")
+		if oi < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:oi])
+		rest := s[oi+1:]
+		ci := strings.Index(rest, "](")
+		if ci < 0 {
+			b.WriteString(s[oi:])
+			return b.String()
+		}
+		text := rest[:ci]
+		afterParen := rest[ci+2:]
+		pi := strings.Index(afterParen, ")")
+		if pi < 0 {
+			b.WriteString(s[oi:])
+			return b.String()
+		}
+		url := afterParen[:pi]
+		b.WriteString("<a href=\"")
+		b.WriteString(htmlEscape(url))
+		b.WriteString("\">")
+		b.WriteString(text)
+		b.WriteString("</a>")
+		s = afterParen[pi+1:]
+	}
+}
+
+func replaceImg(s string) string {
+	var b strings.Builder
+	for {
+		oi := strings.Index(s, "![")
+		if oi < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:oi])
+		rest := s[oi+2:]
+		ci := strings.Index(rest, "](")
+		if ci < 0 {
+			b.WriteString(s[oi:])
+			return b.String()
+		}
+		alt := rest[:ci]
+		afterParen := rest[ci+2:]
+		pi := strings.Index(afterParen, ")")
+		if pi < 0 {
+			b.WriteString(s[oi:])
+			return b.String()
+		}
+		src := afterParen[:pi]
+		b.WriteString("<img alt=\"")
+		b.WriteString(htmlEscape(alt))
+		b.WriteString("\" src=\"")
+		b.WriteString(htmlEscape(src))
+		b.WriteString("\">")
+		s = afterParen[pi+1:]
+	}
+}
+
+func htmlEscape(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }

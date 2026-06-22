@@ -455,7 +455,7 @@ func scanNewComments(ticketDir string) []PendingComment {
 }
 
 // scanNewAttachments returns files whose content hash differs from the recorded
-// baseline (new or changed).
+// baseline (new or changed). Skips cache / temp / lock files.
 func scanNewAttachments(ticketDir string, known map[string]string) []string {
 	dir := filepath.Join(ticketDir, "attachments")
 	entries, err := os.ReadDir(dir)
@@ -467,12 +467,19 @@ func scanNewAttachments(ticketDir string, known map[string]string) []string {
 		if e.IsDir() {
 			continue
 		}
-		path := filepath.Join(dir, e.Name())
+		name := e.Name()
+		// Skip cache / temp / lock files
+		if strings.HasPrefix(name, ".") || strings.HasSuffix(name, "~") ||
+			strings.HasSuffix(name, "#") || strings.HasSuffix(name, "_") ||
+			strings.HasPrefix(name, "~$") {
+			continue
+		}
+		path := filepath.Join(dir, name)
 		h, err := HashFile(path)
 		if err != nil {
 			continue
 		}
-		if known == nil || known[e.Name()] != h {
+		if known == nil || known[name] != h {
 			out = append(out, path)
 		}
 	}
