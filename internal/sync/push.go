@@ -325,6 +325,13 @@ func (s *Syncer) applyUpdate(ctx context.Context, ch Change, idToName, nameToID 
 	}
 	s.postNote(ctx, ch.RemoteID, ch.Ref)
 	if t, err := s.API.GetTicket(ctx, ch.RemoteID); err == nil {
+		// Restore the Markdown description from the working copy into the
+		// fetched ticket so the baseline hash stays consistent. The API
+		// returns plain text in `description` when `description_html` is
+		// also sent, which would break hash comparison on the next status.
+		if ch.HasFieldChange && ch.Update.Description != nil {
+			t.Description = *ch.Update.Description
+		}
 		return s.writeTicket(ctx, t, idToName[t.ColumnID], ch.Slug, false)
 	}
 	return nil
@@ -364,7 +371,9 @@ func outgoingDescription(doc TicketDoc) (plain, html string) {
 			fmt.Fprintf(os.Stderr, "warning: md→html conversion failed (%v); sending plain text only\n", err)
 			return doc.Description, ""
 		}
-		return "", converted
+		// Send both plain Markdown (so the baseline hash stays consistent)
+		// and rendered HTML (so the web UI displays formatted content).
+		return doc.Description, converted
 	}
 }
 
