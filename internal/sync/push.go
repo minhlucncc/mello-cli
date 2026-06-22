@@ -471,7 +471,7 @@ func scanNewAttachments(ticketDir string, known map[string]string) []string {
 		// Skip cache / temp / lock files
 		if strings.HasPrefix(name, ".") || strings.HasSuffix(name, "~") ||
 			strings.HasSuffix(name, "#") || strings.HasSuffix(name, "_") ||
-			strings.HasPrefix(name, "~$") {
+			strings.HasPrefix(name, "~$") || strings.HasPrefix(name, ".~") {
 			continue
 		}
 		path := filepath.Join(dir, name)
